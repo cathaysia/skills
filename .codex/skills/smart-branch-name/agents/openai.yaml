@@ -1,0 +1,7 @@
+interface:
+  display_name: "Smart Branch Name"
+  short_description: "Generate repo-aware branch names"
+  default_prompt: "Use $smart-branch-name to suggest a branch name for my current change."
+
+policy:
+  allow_implicit_invocation: true
