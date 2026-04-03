@@ -18,7 +18,8 @@ Choose the prefix that best matches the request:
 - `feature/`: new feature, enhancement, or user-visible capability
 - `bugfix/`: defect fix, regression fix, or behavior correction
 - `hotfix/`: urgent production fix, release blocker, or critical incident fix
-- `feat/`: use only when the repository inspection output reports `feature_prefix=feat`
+- `feat/`: use only when the repository inspection output reports
+  `feature_prefix=feat`
 
 If the request is ambiguous, ask a short follow-up before finalizing the name.
 
@@ -26,7 +27,8 @@ If the request is ambiguous, ask a short follow-up before finalizing the name.
 
 - Extract the core change intent from the user request.
 - Convert it to lowercase kebab-case.
-- Drop filler words such as `the`, `a`, `an`, `for`, `to`, `with`, `please`, `help`, `support`.
+- Drop filler words such as `the`, `a`, `an`, `for`, `to`, `with`, `please`,
+  `help`, `support`.
 - Keep the slug short enough to scan quickly.
 
 Examples:
@@ -43,15 +45,19 @@ Run `bash scripts/detect_youtrack_usage.sh` from the repository root.
 Interpret the result like this:
 
 - If `detected=true`, ask the user for the related YouTrack issue key.
-- If `detected=false`, do not ask for an issue key and return a branch name without one.
-- If `feature_prefix=feat`, prefer `feat/` for feature work. Otherwise use `feature/`.
-- If the script cannot inspect the repository cleanly, explain the limitation and ask the user whether issue-linked naming is expected.
+- If `detected=false`, do not ask for an issue key and return a branch name
+  without one.
+- If `feature_prefix=feat`, prefer `feat/` for feature work. Otherwise use
+  `feature/`.
+- If the script cannot inspect the repository cleanly, explain the limitation
+  and ask the user whether issue-linked naming is expected.
 
 Ask with a short plain-text question such as:
 
 `Which YouTrack issue should this branch link to? Reply with a key like ABC-123 or none.`
 
-If the user answers `none`, `no`, `无`, or equivalent, omit the issue key entirely.
+If the user answers `none`, `no`, `无`, or equivalent, omit the issue key
+entirely.
 
 ## Compose the final branch name
 
@@ -68,5 +74,7 @@ Examples:
 
 ## Output
 
-- Return only the final suggested branch name unless the user asked for explanation.
-- If you had to ask a clarifying question, wait for the answer before returning the final name.
+- Return only the final suggested branch name unless the user asked for
+  explanation.
+- If you had to ask a clarifying question, wait for the answer before returning
+  the final name.
