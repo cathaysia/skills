@@ -1,5 +1,5 @@
 # Skill
 
 ```bash
-pnpm dlx skills add cathaysia/skill-spark
+pnpm dlx skills add cathaysia/skills
 ```
