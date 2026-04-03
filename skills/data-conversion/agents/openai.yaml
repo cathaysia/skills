@@ -1,0 +1,7 @@
+interface:
+  display_name: "Data Conversion"
+  short_description: "Route format conversions to the right CLI"
+  default_prompt: "Use $data-conversion to convert a file format or choose the right conversion tool."
+
+policy:
+  allow_implicit_invocation: true
