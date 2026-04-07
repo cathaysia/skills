@@ -1,6 +1,6 @@
 ---
 name: toolchain-quality
-description: Set up toolchains and baseline code-quality files for Rust projects, frontend or Next.js style Node.js projects, and shared repository bootstrap. Use when Codex needs to pin Rust or Node.js tooling, add baseline quality config files, or align CI and local setup with repository standards.
+description: Set up toolchains, release automation, and baseline code-quality files for Rust projects, frontend or Next.js style Node.js projects, and shared repository bootstrap. Use when Codex needs to pin Rust or Node.js tooling, add release-please, add baseline quality config files, or align CI and local setup with repository standards.
 ---
 
 # Toolchain Quality
@@ -17,6 +17,8 @@ guessing:
   GitHub Actions Rust jobs
 - Node.js frontend project: `package.json`, `pnpm-lock.yaml`, `next.config.*`,
   frontend app directories, `src/` with `ts`, `tsx`, `js`, or `jsx`
+- Release automation request: repository needs `release-please` config,
+  manifest, or workflow support
 - Shared bootstrap only: repository needs `.editorconfig` or
   `.pre-commit-config.yaml` regardless of language stack
 
@@ -30,6 +32,7 @@ need exact file content, update rules, or stack-specific decisions:
 
 - `references/rust.md`
 - `references/frontend-nodejs.md`
+- `references/release-please.md`
 - `references/common.md`
 
 ## Workflow
@@ -37,11 +40,14 @@ need exact file content, update rules, or stack-specific decisions:
 1. Inspect the target repository and identify which stack rules apply.
 2. Confirm or infer the concrete toolchain versions from user input or existing
    repository context.
-3. Apply the relevant reference instructions exactly. Do not loosen pinned
+3. If the request includes `release-please`, inspect the repo and generate a
+   short list of concrete configuration options for the user to choose from
+   before writing files.
+4. Apply the relevant reference instructions exactly. Do not loosen pinned
    versions into floating channels.
-4. Preserve existing project choices where the reference says create only when
+5. Preserve existing project choices where the reference says create only when
    missing.
-5. When modifying existing files such as `package.json` or GitHub Actions, keep
+6. When modifying existing files such as `package.json` or GitHub Actions, keep
    the change minimal and local to the requested toolchain setup.
 
 ## Guardrails
@@ -52,6 +58,9 @@ need exact file content, update rules, or stack-specific decisions:
   `components` into `rust-toolchain.toml`.
 - For Node.js frontend setup, treat Next.js as one example of a Node.js frontend
   project, not the only supported shape.
+- For `release-please`, do not silently pick from the many supported knobs when
+  the repository has no existing convention. Generate a few concrete options,
+  recommend one, and let the user choose.
 - For shared quality files, do not overwrite `.editorconfig` or
   `.pre-commit-config.yaml` if the project already has them unless the user
   explicitly asks to replace them.

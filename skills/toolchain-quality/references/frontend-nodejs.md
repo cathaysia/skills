@@ -52,11 +52,8 @@ Rules:
 
 ## `biome.jsonc`
 
-If the project needs the shared Biome baseline, create `biome.jsonc` from:
-
-- `/Users/loongtao/xidl/biome.jsonc`
-
-Do not rewrite the template by memory. Copy the canonical local file content.
+If the project needs the shared Biome baseline, create `biome.jsonc` from the
+workspace's canonical Biome template rather than rewriting it by memory.
 
 ## Editing policy
 

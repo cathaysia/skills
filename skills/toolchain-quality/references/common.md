@@ -5,9 +5,8 @@ language stack.
 
 ## `.editorconfig`
 
-If the target repository does not already have `.editorconfig`, create it from:
-
-- `/Users/loongtao/xidl/.editorconfig`
+If the target repository does not already have `.editorconfig`, create it from
+the workspace's canonical shared template.
 
 Rules:
 
@@ -15,12 +14,55 @@ Rules:
 - Do not overwrite an existing `.editorconfig` unless the user explicitly asks
   for replacement.
 
+### Examples
+
+```ini
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 80
+
+[*.{json,toml,yml,gyp, scm}]
+indent_style = space
+indent_size = 2
+
+[*.js]
+indent_style = space
+indent_size = 2
+
+[*.rs]
+indent_style = space
+indent_size = 4
+
+[*.{c,cc,h}]
+indent_style = space
+indent_size = 4
+
+[*.{py,pyi}]
+indent_style = space
+indent_size = 4
+
+[*.swift]
+indent_style = space
+indent_size = 4
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+indent_size = 8
+```
+
 ## `.pre-commit-config.yaml`
 
-If the target repository does not already have `.pre-commit-config.yaml`, create
-it from:
-
-- `/Users/loongtao/xidl/.pre-commit-config.yaml`
+If the target repository does not already have `.pre-commit-config.yaml`,
+create it from the workspace's canonical shared template.
 
 Rules:
 
