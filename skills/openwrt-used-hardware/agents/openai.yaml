@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenWrt Used Hardware"
+  short_description: "Screen used OpenWrt hardware on Xianyu."
+  default_prompt: "Use this skill to shortlist OpenWrt-supported used hardware, verify real Xianyu listings, and favorite the best-value matches."
