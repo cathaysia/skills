@@ -1,0 +1,26 @@
+{
+  "skill_name": "nextjs-expert",
+  "evals": [
+    {
+      "id": 0,
+      "name": "dashboard-with-shadcn-and-zod",
+      "prompt": "Create a Next.js dashboard using shadcn/ui components. The dashboard should display a list of users fetched from an API. Use Zod to validate the API response and define types. Use React Query to fetch the data and handle SWR-style updates. Use Tailwind CSS with shadcn's predefined colors for styling.",
+      "expected_output": "A Next.js implementation with shadcn/ui components, Zod schema for user data, React Query for fetching, and Tailwind classes using CSS variables (e.g., text-primary).",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "form-with-server-action-and-zod",
+      "prompt": "Create a form to add a new user. The form should use shadcn/ui components. Validate the form data on both client and server using Zod. Use a Next.js Server Action to handle the submission and React Query's useMutation for the client-side state.",
+      "expected_output": "A form component using shadcn/ui, a Zod schema for validation, a Server Action marked with 'use server', and useMutation from React Query.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "theme-aware-layout-with-shadcn",
+      "prompt": "Create a root layout that sets up next-themes and shadcn/ui. Include a header with a theme switcher and a sidebar. Use shadcn's predefined colors for the header background and text.",
+      "expected_output": "A root layout with ThemeProvider, suppressHydrationWarning, and components using shadcn color variables like bg-background and text-foreground.",
+      "files": []
+    }
+  ]
+}

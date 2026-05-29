@@ -1,0 +1,26 @@
+{
+  "skill_name": "nextjs-expert",
+  "evals": [
+    {
+      "id": 0,
+      "name": "dashboard-creation",
+      "prompt": "Create a Next.js dashboard with a sidebar and a main content area. The sidebar should have a list of categories (e.g., 'Analytics', 'Users', 'Settings'). Clicking a category should update the URL search param 'tab' and change the main content. The content should be fetched server-side based on the 'tab' param. Use next-themes for theme switching.",
+      "expected_output": "A Next.js project structure with a root layout, a dashboard page that reads searchParams, and a sidebar that uses Link to update searchParams. ThemeProvider should be present.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "refactor-to-rsc",
+      "prompt": "I have a product list component that uses 'use client' and fetches data in a useEffect hook. It also uses useState for a search query. Refactor this to a Server Component that uses URL search params for the search query and fetches data directly in the component.",
+      "expected_output": "A Server Component that takes searchParams as props, fetches data using those params, and uses a Client Component only for the search input field which updates the URL.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "theme-switcher-implementation",
+      "prompt": "Implement a theme switcher component using next-themes. It should support light, dark, and system themes. Ensure it handles hydration mismatch correctly.",
+      "expected_output": "A Client Component using useTheme, with a mounted check to avoid hydration mismatch, and a ThemeProvider in the root layout.",
+      "files": []
+    }
+  ]
+}
