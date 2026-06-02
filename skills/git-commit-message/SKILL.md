@@ -43,6 +43,8 @@ Use this skill when the user wants to:
 - Do not add a body or footer unless it carries real information.
 - If the change is breaking, explain the incompatibility in a
   `BREAKING CHANGES:` footer.
+- If the change addresses a known GitHub issue, add a footer using the `fix #id`
+  syntax (e.g., `fix #123`) to automatically close the issue.
 
 ## Drafting Mode
 
@@ -64,6 +66,7 @@ type(scope): subject
 
 body paragraph
 
+fix #id
 BREAKING CHANGES: migration or compatibility note
 ```
 
@@ -112,4 +115,10 @@ refactor(skills): add conventional commit drafting workflow
 feat(api): rename client-stream annotations
 
 BREAKING CHANGES: replace legacy underscore annotation names with hyphenated forms
+```
+
+```text
+fix(http): handle concurrent stream timeouts
+
+fix #45
 ```
