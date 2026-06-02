@@ -1,0 +1,19 @@
+{
+  "skill_name": "tech-doc-creator",
+  "evals": [
+    {
+      "id": 0,
+      "name": "Distributed Rate Limiter",
+      "prompt": "Create a technical document for a distributed rate limiter that supports multiple strategies (Token Bucket, Leaky Bucket) and can handle high throughput with low latency.",
+      "expected_output": "A concise technical document following the modular structure, including Kroki diagrams, BDD tests, and pseudocode, with minimal interface code.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "Image Upload Service",
+      "prompt": "Design a technical document for an image upload and processing service. Users upload images, which are then resized and stored in S3. The system should notify the user when processing is complete.",
+      "expected_output": "A data-flow-centric document showing the path from upload to S3 and notification, with diagrams and BDD tests.",
+      "files": []
+    }
+  ]
+}
