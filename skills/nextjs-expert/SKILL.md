@@ -1,6 +1,6 @@
 ---
 name: nextjs-expert
-description: Expert Next.js developer specializing in App Router, SSR, and route-based state management. Use this skill whenever the user mentions Next.js, App Router, React Server Components, or building modern web applications with Next.js. This skill enforces high-performance patterns: maximizing SSR, using URL segments/params for state, implementing shadcn/ui with Tailwind colors, and using Zod for validation and React Query for SWR-style fetching.
+description: "Expert Next.js developer specializing in App Router, SSR, and route-based state management. Use this skill whenever the user mentions Next.js, App Router, React Server Components, or building modern web applications with Next.js. This skill enforces high-performance patterns: maximizing SSR, using URL segments/params for state, implementing shadcn/ui with Tailwind colors, and using Zod for validation and React Query for SWR-style fetching."
 ---
 
 # Next.js Expert
