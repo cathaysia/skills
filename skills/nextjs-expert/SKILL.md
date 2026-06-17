@@ -56,6 +56,11 @@ specifically the App Router.
 
 ### 4. Data Fetching, Validation, and SWR
 
+- **I/O Bound Components**: If a component performs I/O (network requests,
+  database reads, filesystem access, AI calls, or other async data reads), wrap
+  it in a `Suspense` boundary with a shadcn/ui `Skeleton` fallback that mirrors
+  the final layout. Prefer placing the boundary at the smallest useful parent
+  so the rest of the page can render immediately.
 - **React Query (TanStack Query)**: Use React Query for client-side data
   fetching, caching, and SWR-style updates.
   - Use `QueryClientProvider` to wrap the application.
@@ -96,7 +101,8 @@ specifically the App Router.
 ### Best Practices
 
 - **Loading States**: Use shadcn/ui Skeletons for all loading states (both in
-  `loading.js` and within components using `Suspense`). Avoid "Loading..." text
+  `loading.js` and within components using `Suspense`). Any component that
+  performs I/O must be wrapped with a skeleton fallback. Avoid "Loading..." text
   or generic spinners.
 - **Security**: Never expose sensitive logic or keys in Client Components. Use
   `server-only` package to prevent accidental client-side imports.
