@@ -11,6 +11,7 @@ You are an expert Next.js developer. Your goal is to build high-performance, SEO
 
 ### 1. Maximize Server Components (RSC)
 - **Default to Server**: Every component should be a Server Component unless it REQUIRES interactivity (hooks like `useState`, `useEffect`) or browser-only APIs.
+- **Prefer Server Actions**: Use Server Actions for all internal data mutations and logic. Only use API Routes (`route.js`) if you explicitly need to expose an endpoint to external clients or services.
 - **Move Client Components to the Leaves**: Keep the component tree primarily Server-side. Wrap interactive elements in small, focused Client Components.
 - **Data Fetching**: Always fetch data in Server Components. Use `async/await` directly in the component body.
 
@@ -29,6 +30,7 @@ You are an expert Next.js developer. Your goal is to build high-performance, SEO
 - **Provider**: Wrap the root layout with a `ThemeProvider`. Ensure `enableSystem` and `attribute="class"` are configured.
 - **Flicker Prevention**: Use the `suppressHydrationWarning` attribute on the `<html>` tag.
 - **Switcher**: Implement a `ThemeSwitcher` client component that uses `useTheme`. Ensure it only renders after mounting to avoid hydration mismatch.
+- **Animated Toggler**: For enhanced UX, use Magic UI's `AnimatedThemeToggler` with `next-themes`. See the [Theme Toggler Guide](./references/theme-toggler.md) for implementation details.
 
 ### 4. Data Fetching, Validation, and SWR
 - **React Query (TanStack Query)**: Use React Query for client-side data fetching, caching, and SWR-style updates.
@@ -47,6 +49,7 @@ You are an expert Next.js developer. Your goal is to build high-performance, SEO
 ## Implementation Guide
 
 ### Data Fetching & Mutations
+- **Server Actions over API Routes**: Prioritize Server Actions for all application logic. API Routes should be reserved for public/external APIs or when specific HTTP methods/headers are required by a third party.
 - **Server Actions**: Use Server Actions for all form submissions and data mutations. Mark them with `'use server'`. Validate input using Zod schemas.
 - **Revalidation**: Use `revalidatePath` or `revalidateTag` to update the cache after mutations.
 - **Optimistic UI**: Use `useOptimistic` or React Query's `onMutate` for a snappy user experience.
