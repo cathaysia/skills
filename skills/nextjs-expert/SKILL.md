@@ -113,6 +113,7 @@ specifically the App Router.
   or generic spinners.
 - **Security**: Never expose sensitive logic or keys in Client Components. Use
   `server-only` package to prevent accidental client-side imports.
+- **Auth / Redirects**: Do not use `redirect` for login logic within the code. All login-related redirects must be handled centrally in `proxy.ts`.
 - **Performance**: Use `next/image` for optimized images and `next/font` for
   zero-layout-shift fonts.
 - **Types**: Use TypeScript for all components, actions, and schemas.
