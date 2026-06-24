@@ -59,8 +59,8 @@ specifically the App Router.
 - **I/O Bound Components**: If a component performs I/O (network requests,
   database reads, filesystem access, AI calls, or other async data reads), wrap
   it in a `Suspense` boundary with a shadcn/ui `Skeleton` fallback that mirrors
-  the final layout. Prefer placing the boundary at the smallest useful parent
-  so the rest of the page can render immediately.
+  the final layout. Prefer placing the boundary at the smallest useful parent so
+  the rest of the page can render immediately.
 - **React Query (TanStack Query)**: Use React Query for client-side data
   fetching, caching, and SWR-style updates.
   - Use `QueryClientProvider` to wrap the application.
@@ -100,6 +100,13 @@ specifically the App Router.
 
 ### Best Practices
 
+- **Component Architecture**:
+  - Strictly enforce **one component per file**. Do not define multiple
+    components within a single file.
+  - **Avoid defining functions inside components**. Define them outside (e.g.,
+    below the component) and call them from within.
+  - If a function _must_ be created inside a component (e.g., it requires access
+    to local state or props), it **must be wrapped in `useCallback`**.
 - **Loading States**: Use shadcn/ui Skeletons for all loading states (both in
   `loading.js` and within components using `Suspense`). Any component that
   performs I/O must be wrapped with a skeleton fallback. Avoid "Loading..." text
