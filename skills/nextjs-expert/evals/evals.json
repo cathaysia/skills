@@ -21,6 +21,13 @@
       "prompt": "Implement a theme switcher component using next-themes. It should support light, dark, and system themes. Ensure it handles hydration mismatch correctly.",
       "expected_output": "A Client Component using useTheme, with a mounted check to avoid hydration mismatch, and a ThemeProvider in the root layout.",
       "files": []
+    },
+    {
+      "id": 3,
+      "name": "server-data-table-with-restorable-infinite-scroll",
+      "prompt": "Create a Next.js App Router audit-log table using shadcn/ui. Put the search box plus action, executor, and status filter dropdowns directly above the table. The table must have a fixed viewport, a sticky header, and seamless loading as the user scrolls. The backend accepts page, pagesize, action, executor, and status parameters. Store pagination and filters in the URL so refreshing after loading several pages restores the same accumulated rows. Do not use the browser's native overflow scrollbar.",
+      "expected_output": "A shadcn Data Table with a responsive non-scrolling search/filter toolbar directly above it, wrapped in ScrollArea with a bounded flex/min-h-0 layout, a sticky header, a ScrollArea viewport ref for guarded incremental loading, server-side page/pageSize/filter handling, URL-backed filter and pagination state, page reset on filter changes, and refresh restoration of all rows through the saved page without a nested native overflow container.",
+      "files": []
     }
   ]
 }

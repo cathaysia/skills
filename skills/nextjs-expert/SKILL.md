@@ -1,6 +1,6 @@
 ---
 name: nextjs-expert
-description: "Expert Next.js developer specializing in App Router, SSR, and route-based state management. Use this skill whenever the user mentions Next.js, App Router, React Server Components, or building modern web applications with Next.js. This skill enforces high-performance patterns: maximizing SSR, using URL segments/params for state, implementing shadcn/ui with Tailwind colors, and using Zod for validation and React Query for SWR-style fetching."
+description: "Expert Next.js developer specializing in App Router, SSR, route-based state management, and production data tables. Use this skill whenever the user mentions Next.js, App Router, React Server Components, building modern web applications with Next.js, or creating a table/data grid in a Next.js app. This skill enforces high-performance patterns: maximizing SSR, using URL segments/params for state, implementing shadcn/ui with Tailwind colors, building fixed-size shadcn Data Tables with sticky headers and ScrollArea-based seamless loading, and using Zod for validation and React Query for SWR-style fetching."
 ---
 
 # Next.js Expert
@@ -54,7 +54,36 @@ specifically the App Router.
   [Theme Toggler Guide](./references/theme-toggler.md) for implementation
   details.
 
-### 4. Data Fetching, Validation, and SWR
+### 4. Data Tables
+
+- **Use the shadcn Data Table pattern**: Whenever creating a table, data grid,
+  admin list, audit log, or other tabular view, build it with the local
+  shadcn/ui Data Table component and TanStack Table. Do not create a separate
+  ad-hoc table implementation unless the user explicitly requests one.
+- **Fixed viewport**: Give the table an explicit, layout-controlled width and
+  height. Use a `flex`/`min-h-0` chain so rows scroll inside the table instead
+  of expanding the page.
+- **Toolbar directly above the table**: Place search inputs and filter selects
+  in a responsive, non-scrolling toolbar immediately above the table viewport.
+  Keep it in the same table section with `shrink-0`; do not place filters in a
+  detached panel or inside the scrolling rows.
+- **One scroll owner**: Wrap the table in shadcn/ui `ScrollArea`. Remove or
+  disable the shadcn `Table` component's native `overflow-x-auto` wrapper so
+  the browser does not create a second overflow scrollbar.
+- **Sticky header**: Keep the header fixed at the top of the `ScrollArea`
+  viewport with an opaque or blurred `bg-background`, an appropriate `z-index`,
+  and a visual divider.
+- **Seamless loading**: Listen to the actual `ScrollArea` viewport and load the
+  next server page near the bottom. Append and deduplicate rows without
+  replacing the existing list or moving the user's scroll position.
+- **URL-backed server state**: The backend query must accept `page`,
+  `pageSize`/`pagesize`, and all active filter/sort parameters. Store the same
+  state in the URL, reset `page` when filters change, and reconstruct all rows
+  through the saved page after a refresh.
+- Follow the complete [Data Table Guide](./references/data-table.md) whenever a
+  task creates or substantially changes a table.
+
+### 5. Data Fetching, Validation, and SWR
 
 - **I/O Bound Components**: If a component performs I/O (network requests,
   database reads, filesystem access, AI calls, or other async data reads), wrap
@@ -72,7 +101,7 @@ specifically the App Router.
   - Use `z.infer<typeof schema>` to generate TypeScript types from schemas,
     ensuring type safety from the network edge to the UI.
 
-### 5. Layouts and Routing
+### 6. Layouts and Routing
 
 - **Nested Layouts**: Use `layout.js` to share UI across routes (sidebars,
   navs).
