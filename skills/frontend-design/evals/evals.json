@@ -1,0 +1,49 @@
+{
+  "skill_name": "frontend-design",
+  "evals": [
+    {
+      "id": 0,
+      "name": "dense-audit-log-redesign",
+      "prompt": "Redesign an admin audit-log page. The current layout has a page title plus a short explanation, then a filter card containing a second card for the table. Each row has actor, action, target, time, and status. Operators scan hundreds of rows on desktop, but the page must remain usable on a phone. Give a concrete layout and component hierarchy, decide how actions and statuses should be represented, and cover loading, no-results, first-use empty, and recoverable error states. The product already has a component library and semantic color tokens.",
+      "expected_output": "A context-aware redesign that removes redundant containers without blindly removing useful explanation, preserves dense scanning, makes statuses accessible without relying only on color, adapts the table deliberately for narrow screens, reuses the existing design system, and differentiates the required asynchronous states.",
+      "files": [],
+      "expectations": [
+        "The response removes or flattens the redundant nested-card structure while allowing the short explanation to remain when it helps users understand the page.",
+        "The desktop recommendation supports dense scanning and the phone recommendation deliberately reprioritizes or restructures row content instead of merely shrinking the table.",
+        "Status remains understandable without color alone, and any icon-only representation includes an accessible name or equivalent text alternative.",
+        "The response covers loading, no-results, first-use empty, and recoverable error as distinct states with appropriate next actions.",
+        "The recommendation reuses the existing component library and semantic tokens instead of proposing a parallel custom system."
+      ]
+    },
+    {
+      "id": 1,
+      "name": "distinctive-repair-shop-landing-page",
+      "prompt": "Create a polished single-page website for a small analog synthesizer repair shop called Oscillator Works. It should feel expert, tactile, and slightly industrial rather than like a generic SaaS template. Include a strong repair-booking action, services, the repair process, selected workshop notes, and trust details. Deliver working HTML, CSS, and minimal JavaScript, make it responsive and accessible, and do not use external image assets.",
+      "expected_output": "A functioning, responsive implementation with a coherent visual concept suited to analog synth repair, purposeful typography/color/composition, non-generic layout and details, accessible interactions, restrained motion, and working primary navigation or booking interactions without unnecessary dependencies.",
+      "files": [],
+      "expectations": [
+        "The output is a self-contained working HTML document with embedded CSS and only minimal JavaScript, with no external image or runtime dependency.",
+        "The page contains the requested booking action, services, repair process, workshop notes, and trust details.",
+        "The visual system expresses a coherent tactile and industrial analog-repair direction rather than a generic SaaS card grid or purple-gradient template.",
+        "The implementation includes deliberate narrow-screen behavior and avoids obvious horizontal overflow.",
+        "Primary interactions are keyboard-usable, icon-only controls have programmatic accessible names rather than relying only on title text, focus is visible, and motion respects reduced-motion preferences."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "security-settings-review",
+      "prompt": "Review an existing account-security settings page without proposing a wholesale redesign. It uses the product's established card, button, alert, and toast components. Current issues: recovery-code download is an unlabeled icon button; Delete account is also icon-only; MFA setup help appears only on hover; a failed recovery-code regeneration is reported in an auto-dismissed toast; the sessions card contains a separate card for every session; and the layout clips long device names at 200% zoom. Return a prioritized review with specific fixes and explain the user impact of each finding.",
+      "expected_output": "A prioritized, scoped review that leads with accessibility and recovery blockers, distinguishes familiar from consequential icon actions, supplies accessible naming and non-hover access, moves actionable errors out of transient toast-only feedback, simplifies redundant card nesting, addresses zoom and overflow, preserves the existing design system, and gives concrete corrections.",
+      "files": [],
+      "expectations": [
+        "The review stays scoped to the existing page and prioritizes usability or accessibility blockers before visual polish.",
+        "The recovery-code download control receives an accessible name, while Delete account is changed to a clearly worded consequential action rather than remaining an ambiguous icon-only control.",
+        "MFA help becomes available without hover and remains usable by keyboard and touch users.",
+        "Recovery-code regeneration failure is moved from toast-only feedback to a persistent, actionable error near the relevant control.",
+        "Per-session nested cards are simplified using a list, rows, dividers, spacing, or another lighter structure.",
+        "The review provides a concrete fix for long device names and usability at 200% zoom.",
+        "Recommendations continue using the product's established components rather than introducing a new design system."
+      ]
+    }
+  ]
+}
