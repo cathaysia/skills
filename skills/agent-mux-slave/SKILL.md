@@ -70,7 +70,7 @@ when it fires:
 - When a matching event fires, the master routes it to you, your node fires
   the `[mux]` wake, and the next `mux_pull()` returns it under `watch` (with
   `watch_id`, `kind`, and the `event` payload). Then re-check
-  `get_zone_snapshot()` / retry `zone_acquire`.
+  `get_zone_snapshot()` / retry `zone_request`.
 - `watch_cancel(watch_id)` drops the watch early; watches also expire after
   `ttl` and are cleaned up if you go offline.
 
@@ -85,6 +85,10 @@ when it fires:
 
 - Before editing, check `get_zone_snapshot()` (or ask the master via
   `send_rpc(master_sid, "may_i_touch", {files: [...]})`).
+- Zones are master-assigned: request ownership with `zone_request(path)` and
+  relinquish it with `zone_request(path, release=true)` (async RPCs — await the
+  returned request_id with `get_result`). You cannot lock zones yourself:
+  `zone_acquire` / `zone_release` are master-only tools.
 - Never edit a file the master assigned to another slave or in a high-risk zone
   (lockfiles, generated code, `.git`, build dirs) without confirmation.
 - If your work overlaps a zone owned by another slave, wait or request

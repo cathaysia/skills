@@ -46,10 +46,14 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
   - Queue work by blocking dependencies, user priority, locality, then
     first-come; steer slaves with `send_control(target, kind, payload)`.
   - When two slaves must touch the same conflict zone, serialize them: finish
-    one before the next starts, or use `zone_acquire` / `zone_release`.
-- Zone locks: `zone_acquire(path, owner=...)` (fails `queued: true` if another
-  owner holds it), `zone_release(path, owner=...)` hands it to the next queued
-  owner, `list_zones()` shows ownership.
+    one before the next starts, or assign the zone with `zone_acquire`.
+- Zone locks are **master-only**: `zone_acquire(path, owner=...)` (fails
+  `queued: true` if another owner holds it; `force` steals it),
+  `zone_release(path, owner=...)` hands it to the next queued owner,
+  `list_zones()` shows ownership. Slaves cannot lock zones themselves — they ask
+  via the `zone_request` RPC, which the master node auto-answers against its
+  registry (grant / FIFO queue / release), so no `rpc_request` for it is queued
+  to you.
 - Watch routing: a slave can register a watch via `{root}/watch/reg`
   (`mux_watch(kind, filter, ttl)` on its side). The master stores watches,
   matches them against the events it produces (today: `zone_released`, fired

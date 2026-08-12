@@ -354,6 +354,13 @@ async fn handle_zone_release(args: &Value) -> Result<Value, String> {
     Ok(node.zone_release(&path, owner).await)
 }
 
+async fn handle_zone_request(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let path = arg_str(args, "path").ok_or("zone_request: path is required")?;
+    let release = arg_bool(args, "release", false);
+    node.zone_request(&path, release).await
+}
+
 async fn handle_get_zone_snapshot(args: &Value) -> Result<Value, String> {
     let node = require_node()?;
     let _ = args;
@@ -595,7 +602,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "zone_acquire",
-            description: "Acquire the lock for a path/zone (default owner = this node).",
+            description: "MASTER ONLY: acquire/assign the lock for a path/zone. owner defaults to this node; pass owner to assign the zone to a slave; force steals it from the current owner. Slaves cannot lock zones: request ownership with zone_request.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -608,12 +615,24 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "zone_release",
-            description: "Release the lock for a path/zone (only the owner may release).",
+            description: "MASTER ONLY: release the lock for a path/zone (only the current owner may release; the zone is handed to the next queued owner). Slaves relinquish a zone with zone_request(path, release=true).",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "owner": {"type": ["string", "null"]}
+                },
+                "required": ["path"]
+            }),
+        },
+        Tool {
+            name: "zone_request",
+            description: "Request zone ownership from the master (slave). The master's registry decides: grants the zone when free, FIFO-queues you behind the current owner, or (release=true) releases the zone to the next queued owner if you own it. Returns an async RPC request_id; await it with get_result/await_result. Slaves cannot lock zones directly.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "release": {"type": ["boolean", "null"], "description": "release instead of acquire (default false)"}
                 },
                 "required": ["path"]
             }),
@@ -713,6 +732,7 @@ async fn dispatch_tool(name: &str, args: &Value) -> Value {
         "list_zones" => handle_list_zones(args).await,
         "zone_acquire" => handle_zone_acquire(args).await,
         "zone_release" => handle_zone_release(args).await,
+        "zone_request" => handle_zone_request(args).await,
         "get_zone_snapshot" => handle_get_zone_snapshot(args).await,
         "mux_watch" => handle_mux_watch(args).await,
         "watch_cancel" => handle_watch_cancel(args).await,

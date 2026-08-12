@@ -864,6 +864,33 @@ impl Node {
             }
             return;
         }
+        // Zone ownership is master-decided: a slave asks via the `zone_request`
+        // RPC and the master node answers against its authoritative zone
+        // registry (grant when free / FIFO queue when held / release when the
+        // requester owns it). It is a mechanical lock decision, so it is not
+        // queued for the master agent — the master's registry is the decider.
+        if self.role == "master" && method == "zone_request" {
+            let params = data.get("params").cloned().unwrap_or(Value::Null);
+            let path = params
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let release = params.get("release").and_then(|v| v.as_bool()).unwrap_or(false);
+            let requester = data.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let result = if path.is_empty() || requester.is_empty() {
+                json!({"ok": false, "error": "zone_request: path and requester are required"})
+            } else if release {
+                self.zone_release(&path, Some(requester.clone())).await
+            } else {
+                self.zone_acquire(&path, Some(requester.clone()), false).await
+            };
+            let resp = json!({"id": rid, "ok": true, "result": result, "ts": now_ts()});
+            if let Some(rt) = reply_to {
+                self.publish(&rt, Some(resp), false).await;
+            }
+            return;
+        }
         let req = json!({
             "request_id": rid,
             "method": method,
@@ -1199,6 +1226,15 @@ impl Node {
     // ---- zones ----
 
     pub async fn zone_acquire(&self, path: &str, owner: Option<String>, force: bool) -> Value {
+        // Zone ownership is decided by the master only. A slave must not lock a
+        // zone itself, and must not declare an owner; it asks the master with
+        // `zone_request` instead.
+        if self.role != "master" {
+            return json!({
+                "ok": false,
+                "error": "zone_acquire is master-only: zone ownership is decided by the master; use zone_request to ask"
+            });
+        }
         let owner = owner.unwrap_or_else(|| self.sid.clone());
         {
             let mut s = self.state.lock().await;
@@ -1224,6 +1260,14 @@ impl Node {
     }
 
     pub async fn zone_release(&self, path: &str, owner: Option<String>) -> Value {
+        // Releasing is also master-only: a slave relinquishes a zone through
+        // `zone_request(path, release=true)` so the master stays authoritative.
+        if self.role != "master" {
+            return json!({
+                "ok": false,
+                "error": "zone_release is master-only: ask the master with zone_request(path, release=true)"
+            });
+        }
         let mut next_owner: Option<String> = None;
         {
             let mut s = self.state.lock().await;
@@ -1256,6 +1300,41 @@ impl Node {
         )
         .await;
         json!({"ok": true, "path": path, "next_owner": next_owner})
+    }
+
+    /// Slave: ask the master for zone ownership. The master's registry decides:
+    /// it grants the zone when free, FIFO-queues this node behind the current
+    /// owner, or (when `release` is true) releases the zone to the next queued
+    /// owner if this node currently owns it. Returns the async RPC request id;
+    /// await the outcome with `await_result` / `get_result`.
+    pub async fn zone_request(&self, path: &str, release: bool) -> Result<Value, String> {
+        let master = {
+            let s = self.state.lock().await;
+            s.master_sid.clone()
+        }
+        .ok_or_else(|| "zone_request: no master session id known yet".to_string())?;
+        if master == self.sid {
+            return Err(
+                "zone_request is for slaves; as the master use zone_acquire / zone_release directly"
+                    .to_string(),
+            );
+        }
+        let rid = self
+            .send_rpc(
+                &master,
+                "zone_request",
+                Some(json!({"path": path, "release": release})),
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "ok": true,
+            "request_id": rid,
+            "target": master,
+            "path": path,
+            "release": release,
+        }))
     }
 
     // ---- watch (event subscription) ----
@@ -1712,4 +1791,110 @@ fn build_tree(reg: &HashMap<String, Value>, root_sid: &str, sid: &str) -> Value 
         "info": reg.get(sid).cloned().unwrap_or(json!({})),
         "children": children.iter().map(|c| build_tree(reg, root_sid, c)).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod zone_lock_tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn test_config() -> Config {
+        let mut c = Config::default();
+        c.host = "127.0.0.1".to_string();
+        c.port = 1883;
+        c.rpc_timeout = 10.0;
+        c
+    }
+
+    async fn spawn(role: &str, sid: &str, root: &str, master_sid: Option<String>) -> Arc<Node> {
+        Node::start(
+            role,
+            sid,
+            None,
+            master_sid,
+            root,
+            "/tmp/agent-mux-test",
+            &test_config(),
+            None,
+        )
+        .await
+        .expect("node start")
+    }
+
+    /// Zone ownership is master-only: slaves cannot lock zones themselves and
+    /// must ask via the `zone_request` RPC, which the master node answers
+    /// against its authoritative registry (grant / FIFO queue / release).
+    #[tokio::test]
+    #[ignore = "requires a running MQTT broker on 127.0.0.1:1883"]
+    async fn zone_ownership_is_master_only() {
+        // All three nodes share one topic root so they form a single mesh.
+        // Topic roots must be a single path segment (on_message matches
+        // parts[0] == root), so use a flat uuid root for the test mesh.
+        let root = format!("ztest{}", uuid::Uuid::new_v4().simple());
+        let master = spawn("master", "test-master", &root, None).await;
+        let slave_a = spawn("slave", "test-slave-a", &root, Some(master.sid.clone())).await;
+        let slave_b = spawn("slave", "test-slave-b", &root, Some(master.sid.clone())).await;
+
+        // Slaves cannot lock zones directly.
+        let denied = slave_a.zone_acquire("/z", None, false).await;
+        assert_eq!(denied["ok"], false, "slave zone_acquire must be rejected: {denied}");
+        let denied_release = slave_a.zone_release("/z", None).await;
+        assert_eq!(denied_release["ok"], false, "slave zone_release must be rejected");
+
+        // Slave A requests ownership -> master grants it.
+        let rid = slave_a
+            .zone_request("/z", false)
+            .await
+            .expect("zone_request")
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        let res = slave_a.await_result(&rid, Some(10.0)).await;
+        assert_eq!(res["status"], "done", "request must complete: {res}");
+        let result = res["result"].clone();
+        assert_eq!(result["ok"], true, "grant should succeed: {result}");
+        assert_eq!(result["owner"], "test-slave-a");
+
+        // Slave B requests while A holds -> FIFO-queued.
+        let rid2 = slave_b
+            .zone_request("/z", false)
+            .await
+            .expect("zone_request")
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        let res2 = slave_b.await_result(&rid2, Some(10.0)).await;
+        assert_eq!(res2["result"]["ok"], false, "held zone must queue: {res2}");
+        assert_eq!(res2["result"]["queued"], true);
+
+        // A releases -> handed to the next queued owner (B).
+        let rid3 = slave_a
+            .zone_request("/z", true)
+            .await
+            .expect("zone_request")
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        let res3 = slave_a.await_result(&rid3, Some(10.0)).await;
+        assert_eq!(res3["result"]["ok"], true, "release should succeed: {res3}");
+        assert_eq!(res3["result"]["next_owner"], "test-slave-b");
+
+        // The master's registry is the source of truth: B now owns /z.
+        let zones = master.list_zones().await;
+        assert_eq!(zones["zones"]["/z"]["owner"], "test-slave-b", "{zones}");
+
+        // The master can still assign a zone to a slave manually.
+        let assigned = master
+            .zone_acquire("/m", Some("test-slave-a".to_string()), false)
+            .await;
+        assert_eq!(assigned["ok"], true, "master assign should succeed: {assigned}");
+        assert_eq!(assigned["owner"], "test-slave-a");
+
+        master.stop().await;
+        slave_a.stop().await;
+        slave_b.stop().await;
+    }
 }

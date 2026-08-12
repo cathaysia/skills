@@ -111,7 +111,7 @@ Topic root = project directory (git repo root / cwd) with the home prefix stripp
 ## Watch (event subscription)
 
 A slave can **watch a master-produced event** (e.g. "this zone got unlocked")
-and be **woken when it fires**, instead of polling `zone_acquire` /
+and be **woken when it fires**, instead of polling `zone_request` /
 `get_zone_snapshot`. The watcher never needs to know *which* other node owns
 the resource — it only names the event it cares about (`kind` + `filter`).
 
@@ -171,9 +171,22 @@ zone, description, severity, suggestion)`:
 ## Zone locks
 
 Master-owned registry of `path -> {owner, queued[]}` published retained on
-`{root}/zones`. `zone_acquire(path)` fails with `queued: true` when another
-owner holds it (FIFO queue); `zone_release(path, owner)` hands over to the next
-queued owner. Slaves observe the retained snapshot via `get_zone_snapshot()`.
+`{root}/zones`. **Only the master locks zones** — a slave never declares
+ownership:
+
+- `zone_acquire(path, owner?, force?)` (master-only) acquires/assigns a zone and
+  fails with `queued: true` when another owner holds it (FIFO queue); `owner`
+  assigns the zone to a slave; `force` steals it from the current owner.
+- `zone_release(path, owner?)` (master-only) releases a zone and hands it to the
+  next queued owner.
+- Slaves request via `zone_request(path, release?)`, which sends an async RPC
+  `zone_request` to `{root}/rpc/req/{master_sid}`. The master node answers
+  against its registry: grants when free, returns `queued: true` when held, or
+  (with `release: true`, requester owns the zone) releases to the next queued
+  owner. The response arrives on the requester's pending-RPC result.
+
+Slaves observe the retained snapshot via `get_zone_snapshot()` / `list_zones()`
+and can `mux_watch` the `zone_released` event instead of polling.
 
 ## Setup / configuration
 
