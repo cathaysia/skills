@@ -17,6 +17,11 @@ MQTT-based async RPC + liveness + coordination mesh for Codex agents, as a
 - Coordination: the master plans work against conflict-risk zones (git
   worktrees / path zones), serializes agents when conflicts are unavoidable,
   and learns from `report_conflict` feedback.
+- Watch: a slave can subscribe to a **master-produced event** (e.g.
+  `zone_released` — "this zone got unlocked") with `mux_watch(kind,
+  filter)`. When the event fires, the master routes it to the watcher and the
+  watcher's wake channel (MCP notify / tmux) wakes the agent — so a slave can
+  wait for another node to release a scope instead of polling `zone_acquire`.
 - Wake channels (push): **MCP notify** is used whenever the agent declares it
   can receive server-pushed MCP notifications (always the highest priority);
   otherwise a **tmux wake** is used when the TUI runs inside tmux; if neither
@@ -98,7 +103,7 @@ mesh. Override with `--root` (or a `root` field in `mqtt.conf`).
 ## Layout
 
 - `src/main.rs` — CLI, deferred init, stdio MCP server bootstrap.
-- `src/mcp.rs` — JSON-RPC/MCP tool dispatch (23 tools) + global node slot.
+- `src/mcp.rs` — JSON-RPC/MCP tool dispatch (25 tools) + global node slot.
 - `src/node.rs` — MQTT node: async RPC, heartbeat/liveness, worktree/zone
   planning, pending queue + retry.
 - `src/wake.rs` — wake channel abstraction: MCP notify (highest priority),

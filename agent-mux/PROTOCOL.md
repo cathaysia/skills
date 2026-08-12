@@ -33,6 +33,8 @@ Topic root = project directory (git repo root / cwd) with the home prefix stripp
 | `{root}/zones` | master (retained) | all | `{zones: {path: {owner, queued[]}}, updated}` |
 | `{root}/conflict/{sid}` | any node (retained) | master | `{id, sid, files[], zone, description, severity, suggestion, ts}` |
 | `{root}/conflicts` | master (retained) | all | `{conflicts: [entry...], updated}` |
+| `{root}/watch/reg` | slave | master | `{watch_id, watcher_sid, kind, filter, ttl?, ts}` or `{watch_id, watcher_sid, cancel: true, ts}` |
+| `{root}/watch/evt/{sid}` | master | watcher slave | `{watch_id, kind, event, ts}` |
 
 ## Lifecycle
 
@@ -72,7 +74,7 @@ Topic root = project directory (git repo root / cwd) with the home prefix stripp
      notifications. `wake=none` / `AGENT_MUX_WAKE=none` disables notifications
      explicitly.
    - **mux_pull (poll at turn boundaries).** `mux_pull()` non-blockingly drains
-     the node's queues: `{control[], rpc_requests[], events[]}`. The agent
+     the node's queues: `{control[], rpc_requests[], events[], watch[]}`. The agent
      calls it at turn boundaries / when idle, so nothing is missed without a
      push channel. Blocking tools (`wait_events`, `wait_control`,
      `wait_rpc_requests`) remain for the rare case where the agent genuinely
@@ -105,6 +107,52 @@ Topic root = project directory (git repo root / cwd) with the home prefix stripp
   blocked_reason)`. Call with `state='ready'` and the concrete `plan_files`
   (files you intend to modify) when a plan is complete so the master can
   schedule work and avoid conflicts.
+
+## Watch (event subscription)
+
+A slave can **watch a master-produced event** (e.g. "this zone got unlocked")
+and be **woken when it fires**, instead of polling `zone_acquire` /
+`get_zone_snapshot`. The watcher never needs to know *which* other node owns
+the resource — it only names the event it cares about (`kind` + `filter`).
+
+### Registration
+
+`mux_watch(kind, filter?, ttl?)` publishes `{root}/watch/reg`:
+
+```json
+{"watch_id": "<uuid>", "watcher_sid": "<slave sid>", "kind": "zone_released",
+ "filter": {"path": "/abs/path"}, "ttl": 60.0, "ts": 123.0}
+```
+
+- `kind` — which master-produced event to watch. Today: `zone_released`
+  (fired when `zone_release()` succeeds, including handoff to a queued owner).
+- `filter` — partial match on the event payload. `{"path": "/x"}` matches only
+  that exact path; `{"path_prefix": "/x"}` matches any path under it; `{}` /
+  absent matches every event of that kind.
+- `ttl` — optional lifetime in seconds; the master drops the watch after
+  `ttl` even if no event fired (`0` / absent = no expiry).
+
+### Delivery and wake
+
+On every matched event the master publishes `{root}/watch/evt/{watcher_sid}`:
+
+```json
+{"watch_id": "<uuid>", "kind": "zone_released",
+ "event": {"path": "/abs/path", "next_owner": null, "ts": 123.0}, "ts": 123.0}
+```
+
+The watcher's node queues the event and fires its **wake channel** (MCP notify
+or tmux), so the agent is woken out of an idle turn instead of polling.
+`mux_pull()` returns it under the `watch` array alongside `control` /
+`rpc_requests` / `events`.
+
+### Cancellation and cleanup
+
+- `watch_cancel(watch_id)` publishes `{root}/watch/reg` with `cancel: true`;
+  the master removes the watch.
+- Watches expire after `ttl` (swept by the master).
+- When a watcher goes offline (hb `offline` / registry cleared /
+  heartbeat-timeout), the master drops all of its watches.
 
 ## Conflict feedback (master learning)
 

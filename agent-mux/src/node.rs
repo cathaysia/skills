@@ -64,6 +64,13 @@ pub struct State {
     pub rpc_requests: VecDeque<Value>,
     pub zones: HashMap<String, Value>,
     pub zone_snapshot: Value,
+    /// Master-held event subscriptions: watch_id -> {watch_id, watcher_sid,
+    /// kind, filter, ttl, created_at, expires_at}. Only the master stores these;
+    /// slaves just publish watch/reg and receive watch/evt/{sid}.
+    pub watches: HashMap<String, Value>,
+    /// Events the master routed back to this watcher (drained by mux_pull into
+    /// the `watch` array).
+    pub watch_events: VecDeque<Value>,
     pub status: Value,
     pub conflicts: HashMap<String, Value>,
     pub connected: bool,
@@ -84,6 +91,8 @@ impl State {
             rpc_requests: VecDeque::new(),
             zones: HashMap::new(),
             zone_snapshot: Value::Null,
+            watches: HashMap::new(),
+            watch_events: VecDeque::new(),
             status: Value::Null,
             conflicts: load_conflicts_from_disk(config_dir).unwrap_or_default(),
             connected: false,
@@ -123,6 +132,7 @@ pub struct Node {
     pub ctrl_notify: Arc<Notify>,
     pub events_notify: Arc<Notify>,
     pub rpc_notify: Arc<Notify>,
+    pub watch_notify: Arc<Notify>,
     pub ready_notify: Arc<Notify>,
     client: Option<AsyncClient>,
     tasks: std::sync::Mutex<Vec<JoinHandle<()>>>,
@@ -186,6 +196,7 @@ impl Node {
             ctrl_notify: Arc::new(Notify::new()),
             events_notify: Arc::new(Notify::new()),
             rpc_notify: Arc::new(Notify::new()),
+            watch_notify: Arc::new(Notify::new()),
             ready_notify: Arc::new(Notify::new()),
             client: Some(client),
             tasks: std::sync::Mutex::new(Vec::new()),
@@ -394,8 +405,8 @@ impl Node {
                         })
                         .map(|(k, _)| k.clone())
                         .collect();
-                    for sid in offline {
-                        if let Some(info) = s.registry.get_mut(&sid) {
+                    for sid in &offline {
+                        if let Some(info) = s.registry.get_mut(sid) {
                             info["status"] = json!("offline");
                             info["offline_reason"] = json!("heartbeat_timeout");
                         }
@@ -404,8 +415,21 @@ impl Node {
                             "session_id": sid,
                             "reason": "heartbeat_timeout"
                         }));
-                        left.push((sid, "heartbeat_timeout".to_string()));
+                        left.push((sid.clone(), "heartbeat_timeout".to_string()));
                     }
+                    // Master cleanup: drop watches of gone slaves and expire
+                    // watches whose ttl has passed.
+                    if !offline.is_empty() {
+                        s.watches.retain(|_, w| {
+                            w.get("watcher_sid").and_then(|v| v.as_str())
+                                .map(|ws| !offline.iter().any(|sid| sid == ws))
+                                .unwrap_or(true)
+                        });
+                    }
+                    s.watches.retain(|_, w| {
+                        let exp = w.get("expires_at").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        exp == 0.0 || exp > now
+                    });
                 }
                 if !left.is_empty() {
                     task_node.events_notify.notify_one();
@@ -472,6 +496,7 @@ impl Node {
                     self.topic(&["rpc", "resp", self.sid.as_str()]),
                     self.topic(&["master"]),
                     self.topic(&["zones"]),
+                    self.topic(&["watch", "evt", self.sid.as_str()]),
                 ];
                 for t in subs {
                     if let Err(e) = client.subscribe(t.clone(), qos(self.conf.qos)).await {
@@ -554,15 +579,20 @@ impl Node {
                 "hb" => self.on_hb(rel[1], &data, data_obj_empty).await,
                 "status" => self.on_status(rel[1], &data).await,
                 "conflict" => self.on_conflict(rel[1], &data).await,
+                "watch" if rel[1] == "reg" => self.on_watch_reg(&data).await,
                 "ctrl" if rel[1] == self.sid => self.on_ctrl(&data).await,
                 "ctrl_ack" if self.role == "master" => self.on_ctrl_ack(rel[1], &data).await,
                 _ => {}
             }
-        } else if rel.len() == 3 && rel[0] == "rpc" {
-            if rel[1] == "req" && rel[2] == self.sid {
-                self.on_rpc_request(&data).await;
-            } else if rel[1] == "resp" && rel[2] == self.sid {
-                self.on_rpc_response(&data).await;
+        } else if rel.len() == 3 {
+            if rel[0] == "rpc" {
+                if rel[1] == "req" && rel[2] == self.sid {
+                    self.on_rpc_request(&data).await;
+                } else if rel[1] == "resp" && rel[2] == self.sid {
+                    self.on_rpc_response(&data).await;
+                }
+            } else if rel[0] == "watch" && rel[1] == "evt" && rel[2] == self.sid {
+                self.on_watch_evt(&data).await;
             }
         } else if rel.len() == 1 {
             match rel[0] {
@@ -639,6 +669,9 @@ impl Node {
             info["status"] = json!("offline");
             info["offline_reason"] = json!("unregistered");
             info["last_seen"] = json!(now_ts());
+            s.watches.retain(|_, w| {
+                w.get("watcher_sid").and_then(|v| v.as_str()) != Some(sid)
+            });
             return;
         }
         let new = !s.registry.contains_key(sid);
@@ -694,6 +727,9 @@ impl Node {
                 &mut s,
                 json!({"kind": "slave_left", "session_id": sid, "reason": reason}),
             );
+            s.watches.retain(|_, w| {
+                w.get("watcher_sid").and_then(|v| v.as_str()) != Some(sid)
+            });
             drop(s);
             self.publish(&self.topic(&["registry", sid]), None, true).await;
             self.events_notify.notify_one();
@@ -1139,7 +1175,11 @@ impl Node {
         while let Some(v) = s.events.pop_front() {
             events.push(v);
         }
-        json!({"control": control, "rpc_requests": rpc, "events": events})
+        let mut watch = Vec::new();
+        while let Some(v) = s.watch_events.pop_front() {
+            watch.push(v);
+        }
+        json!({"control": control, "rpc_requests": rpc, "events": events, "watch": watch})
     }
 
     pub async fn wait_control(&self, timeout: f64) -> Value {
@@ -1206,7 +1246,171 @@ impl Node {
             }
         }
         self.publish_zones().await;
+        // Master-produced event: a zone got unlocked (possibly handed to the
+        // next queued owner). Early returns above already bailed on failure,
+        // so reaching here means the release succeeded. Watchers are matched
+        // and routed to {root}/watch/evt/{watcher_sid} below.
+        self.emit_watch_events(
+            "zone_released",
+            json!({"path": path, "next_owner": next_owner.clone(), "ts": now_ts()}),
+        )
+        .await;
         json!({"ok": true, "path": path, "next_owner": next_owner})
+    }
+
+    // ---- watch (event subscription) ----
+
+    /// Register a watch for a master-produced event (slave side). Publishes
+    /// `{root}/watch/reg`; the master stores it and routes matching events to
+    /// `{root}/watch/evt/{watcher_sid}`. Returns the generated `watch_id`.
+    pub async fn watch_register(&self, kind: &str, filter: Option<Value>, ttl: Option<f64>) -> Value {
+        let watch_id = uuid::Uuid::new_v4().simple().to_string();
+        let mut reg = json!({
+            "watch_id": watch_id,
+            "watcher_sid": self.sid,
+            "kind": kind,
+            "ts": now_ts(),
+        });
+        if let Some(f) = &filter {
+            reg["filter"] = f.clone();
+        }
+        if let Some(t) = ttl {
+            reg["ttl"] = json!(t);
+        }
+        self.publish(&self.topic(&["watch", "reg"]), Some(reg), false).await;
+        json!({
+            "ok": true,
+            "watch_id": watch_id,
+            "kind": kind,
+            "filter": filter.unwrap_or_else(|| json!({})),
+            "ttl": ttl.unwrap_or(0.0),
+        })
+    }
+
+    /// Cancel a previously registered watch (slave side). Publishes
+    /// `{root}/watch/reg` with `cancel: true`; the master removes the watch.
+    pub async fn watch_cancel(&self, watch_id: &str) -> Value {
+        self.publish(
+            &self.topic(&["watch", "reg"]),
+            Some(json!({
+                "watch_id": watch_id,
+                "watcher_sid": self.sid,
+                "cancel": true,
+                "ts": now_ts(),
+            })),
+            false,
+        )
+        .await;
+        json!({"ok": true, "watch_id": watch_id, "canceled": true})
+    }
+
+    /// Master: register or cancel a watch from `{root}/watch/reg`.
+    async fn on_watch_reg(self: &Arc<Node>, data: &Value) {
+        if self.role != "master" {
+            return;
+        }
+        let watch_id = data.get("watch_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let watcher_sid = data.get("watcher_sid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if watch_id.is_empty() || watcher_sid.is_empty() {
+            return;
+        }
+        let mut s = self.state.lock().await;
+        if data.get("cancel").and_then(|v| v.as_bool()) == Some(true) {
+            s.watches.remove(&watch_id);
+            return;
+        }
+        let Some(kind) = data.get("kind").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let filter = data.get("filter").cloned().unwrap_or_else(|| json!({}));
+        let ttl = data.get("ttl").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let expires_at = if ttl > 0.0 { now_ts() + ttl } else { 0.0 };
+        s.watches.insert(
+            watch_id.clone(),
+            json!({
+                "watch_id": watch_id,
+                "watcher_sid": watcher_sid,
+                "kind": kind,
+                "filter": filter,
+                "ttl": ttl,
+                "created_at": now_ts(),
+                "expires_at": expires_at,
+            }),
+        );
+    }
+
+    /// Slave: a matched watch event arrived on `{root}/watch/evt/{sid}`. Queue
+    /// it (mux_pull returns it under `watch`) and wake the agent so it stops
+    /// polling.
+    async fn on_watch_evt(self: &Arc<Node>, data: &Value) {
+        if self.role != "slave" {
+            return;
+        }
+        {
+            let mut s = self.state.lock().await;
+            s.watch_events.push_back(data.clone());
+        }
+        self.watch_notify.notify_one();
+        self.wake();
+    }
+
+    /// Master: match a produced event against stored watches and publish each
+    /// match to `{root}/watch/evt/{watcher_sid}`. Expired watches are dropped.
+    async fn emit_watch_events(&self, kind: &str, event: Value) {
+        let mut notify: Vec<(String, Value)> = Vec::new();
+        {
+            let mut s = self.state.lock().await;
+            let now = now_ts();
+            s.watches.retain(|_, w| {
+                let exp = w.get("expires_at").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                exp == 0.0 || exp > now
+            });
+            for w in s.watches.values() {
+                if w.get("kind").and_then(|v| v.as_str()) != Some(kind) {
+                    continue;
+                }
+                let filter = w.get("filter").cloned().unwrap_or_else(|| json!({}));
+                if !Self::watch_matches(&filter, &event) {
+                    continue;
+                }
+                let sid = w.get("watcher_sid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let wid = w.get("watch_id").cloned().unwrap_or_else(|| json!(""));
+                if !sid.is_empty() {
+                    notify.push((sid, wid));
+                }
+            }
+        }
+        for (sid, wid) in notify {
+            self.publish(
+                &self.topic(&["watch", "evt", &sid]),
+                Some(json!({
+                    "watch_id": wid,
+                    "kind": kind,
+                    "event": event.clone(),
+                    "ts": now_ts(),
+                })),
+                false,
+            )
+            .await;
+        }
+    }
+
+    /// Partial-match a watch `filter` against an event payload. `{"path": "/x"}`
+    /// requires the exact path; `{"path_prefix": "/x"}` requires the prefix;
+    /// `{}` / absent matches every event of the watch's kind.
+    fn watch_matches(filter: &Value, event: &Value) -> bool {
+        if let Some(path) = filter.get("path").and_then(|v| v.as_str())
+            && event.get("path").and_then(|v| v.as_str()) != Some(path)
+        {
+            return false;
+        }
+        if let Some(prefix) = filter.get("path_prefix").and_then(|v| v.as_str()) {
+            let p = event.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if !p.starts_with(prefix) {
+                return false;
+            }
+        }
+        true
     }
 
     pub async fn list_zones(&self) -> Value {

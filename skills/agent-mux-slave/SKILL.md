@@ -47,14 +47,32 @@ The master coordinates by what you report. Whenever your situation changes:
 ## Receiving master messages
 
 - `mux_pull()` non-blockingly returns everything queued for you:
-  `{"control": [...], "rpc_requests": [...], "events": [...]}`. Call it at the
-  start of every turn / whenever idle.
+  `{"control": [...], "rpc_requests": [...], "events": [...], "watch": [...]}`.
+  Call it at the start of every turn / whenever idle.
 - React to control items: `assign` -> adopt the task (and update
   `report_status`), `pause`/`resume` -> stop/continue, `replan` -> adjust your
   plan, `priority` -> reorder your queue.
 - Never block on the master: rely on the `[mux]` wake (MCP notify when your
   agent supports it, else tmux) and `mux_pull()` at turn boundaries. Do not
   call `wait_control` / `wait_rpc_requests` to wait for input.
+
+## Watching for events
+
+Instead of polling, you can wait for a **master-produced event** and be woken
+when it fires:
+
+- `mux_watch(kind="zone_released", filter={"path": "/abs/path"},
+  ttl=60.0)` registers a watch; it returns a `watch_id`. `kind` names the
+  event (today: `zone_released` — a zone got unlocked, including handoff to a
+  queued owner). `filter` narrows it: `{"path": "/x"}` exact, `{"path_prefix":
+  "/x"}` any path under it, `{}`/absent = any event of that kind. `ttl`
+  (seconds) is optional.
+- When a matching event fires, the master routes it to you, your node fires
+  the `[mux]` wake, and the next `mux_pull()` returns it under `watch` (with
+  `watch_id`, `kind`, and the `event` payload). Then re-check
+  `get_zone_snapshot()` / retry `zone_acquire`.
+- `watch_cancel(watch_id)` drops the watch early; watches also expire after
+  `ttl` and are cleaned up if you go offline.
 
 ## Answering RPCs
 

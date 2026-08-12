@@ -360,6 +360,20 @@ async fn handle_get_zone_snapshot(args: &Value) -> Result<Value, String> {
     Ok(node.get_zone_snapshot().await)
 }
 
+async fn handle_mux_watch(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let kind = arg_str(args, "kind").ok_or("mux_watch: kind is required")?;
+    let filter = arg_value(args, "filter");
+    let ttl = arg_value(args, "ttl").and_then(|v| v.as_f64());
+    Ok(node.watch_register(&kind, filter, ttl).await)
+}
+
+async fn handle_watch_cancel(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let watch_id = arg_str(args, "watch_id").ok_or("watch_cancel: watch_id is required")?;
+    Ok(node.watch_cancel(&watch_id).await)
+}
+
 async fn handle_report_conflict(args: &Value) -> Result<Value, String> {
     let node = require_node()?;
     let files = arg_str_array(args, "files");
@@ -610,6 +624,28 @@ modify when you are ready to coordinate, so the master can schedule work and avo
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
+            name: "mux_watch",
+            description: "Register a watch for a master-produced event (slave). When a matching event fires, the master routes it back to you and your node wakes you ([mux] hint) — no polling needed. kind today: 'zone_released' (a zone got unlocked, including handoff to a queued owner). filter narrows the event: {'path': '/x'} exact path, {'path_prefix': '/x'} any path under it, {} or absent = any event of that kind. ttl (seconds) is optional; the watch expires after ttl. Returns the watch_id (see watch_cancel).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "filter": {"type": ["object", "null"], "description": "partial event match ({path} or {path_prefix})"},
+                    "ttl": {"type": ["number", "null"], "description": "expiry seconds (0/absent = no expiry)"}
+                },
+                "required": ["kind"]
+            }),
+        },
+        Tool {
+            name: "watch_cancel",
+            description: "Cancel a previously registered watch (slave). The master stops routing events for this watch_id.",
+            schema: json!({
+                "type": "object",
+                "properties": {"watch_id": {"type": "string"}},
+                "required": ["watch_id"]
+            }),
+        },
+        Tool {
             name: "report_conflict",
             description: "Report a conflict (or a conflict risk) to the master. Call this when your edits collide \
 with another slave's work, or when you detect a high-risk overlap. files = concrete paths involved, zone = an \
@@ -678,6 +714,8 @@ async fn dispatch_tool(name: &str, args: &Value) -> Value {
         "zone_acquire" => handle_zone_acquire(args).await,
         "zone_release" => handle_zone_release(args).await,
         "get_zone_snapshot" => handle_get_zone_snapshot(args).await,
+        "mux_watch" => handle_mux_watch(args).await,
+        "watch_cancel" => handle_watch_cancel(args).await,
         "report_conflict" => handle_report_conflict(args).await,
         "list_conflicts" => handle_list_conflicts(args).await,
         "risk_zones" => handle_risk_zones(args).await,

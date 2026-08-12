@@ -50,6 +50,12 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
 - Zone locks: `zone_acquire(path, owner=...)` (fails `queued: true` if another
   owner holds it), `zone_release(path, owner=...)` hands it to the next queued
   owner, `list_zones()` shows ownership.
+- Watch routing: a slave can register a watch via `{root}/watch/reg`
+  (`mux_watch(kind, filter, ttl)` on its side). The master stores watches,
+  matches them against the events it produces (today: `zone_released`, fired
+  on `zone_release()` success), and publishes matches to
+  `{root}/watch/evt/{watcher_sid}` so the watcher is woken. Watches expire
+  after `ttl`; the master drops a watcher's watches when it goes offline.
 
 ## RPCs
 
