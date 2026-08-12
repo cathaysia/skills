@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image Recognition"
+  short_description: "Recognize images via a local vision model"
+  default_prompt: "Use $image-recognition to recognize an image from a file path or the clipboard."
+
+policy:
+  allow_implicit_invocation: true

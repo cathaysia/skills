@@ -1,0 +1,23 @@
+{
+  "skill_name": "image-recognition",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Look at this screenshot and tell me what it says: /path/to/screenshot.png",
+      "expected_output": "Script reads the file, returns a transcription/description of the screenshot text.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I just copied an image to the clipboard. Tell me what is in it.",
+      "expected_output": "Script reads the clipboard image and describes its content.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "What color is the button in this image: button.png",
+      "expected_output": "Script answers a specific question about the image using --prompt.",
+      "files": []
+    }
+  ]
+}
