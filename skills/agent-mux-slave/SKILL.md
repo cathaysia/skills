@@ -11,25 +11,26 @@ that may form a **tree** — you connect to the master (or to a parent slave) vi
 follow the master's control messages. The master schedules work so that
 different slaves avoid touching the same conflict-risk files.
 
-Transport is MQTT (async RPC core in `scripts/mux_rpc.py`) wrapped as MCP tools
-(`scripts/mux_mcp.py`). The node is created **lazily** — nothing connects until
-you call `mux_init` (or the server was launched with `--role slave`).
+Transport is MQTT; the node is a **single shared Rust MCP server**
+(`agent-mux` binary, one binary for both roles — role comes from `--role` or
+from `mux_init(role=...)`). The node is created **lazily**: nothing connects
+until you call `mux_init` after this skill loads (or it auto-initializes in the
+background when launched with `--role slave` and a session id is known).
 
 ## Prerequisites / setup (one-time)
 
 - Broker must be running (started by the master side): `docker compose up -d`
-  in `agent-mux-master/scripts/` (mosquitto, no password, port 1883).
-- Dependencies: `python3.13 -m pip install -r scripts/requirements.txt` (Python >= 3.10).
+  in `<repo>/skills/agent-mux-master/scripts/` (mosquitto, no password,
+  port 1883).
+- Build the server once: `cargo build --release` in `<repo>/agent-mux`
+  (rust-toolchain pinned to `1.94.0`, tokio async). Binary:
+  `<repo>/agent-mux/target/release/agent-mux`.
 - MCP config (in `~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.agent-mux-slave]
-command = "python3.13"
-args = ["<ABSOLUTE_PATH>/scripts/mux_mcp.py", "--role", "slave"]
-# Preferred delivery is non-blocking mux_pull() + tmux wake (see below).
-# The blocking receive tools (wait_control/wait_events/wait_rpc_requests)
-# wait inside the MCP call, so keep a raised tool timeout for those.
-tool_timeout_sec = 300
+command = "<repo>/agent-mux/target/release/agent-mux"
+args = ["--role", "slave"]
 ```
 
 - Your session id comes from `$CODEX_THREAD_ID`. If it is unset, **ask the agent
@@ -43,8 +44,8 @@ tool_timeout_sec = 300
      master, or `parent_id=<parent_slave_sid>` for a deeper tree node.
    - If the master's session id is unknown, use `mux_init(role="slave")` and
      read it from the retained `master` message (the node exposes `mux_status()`).
-3. Heartbeat and presence start automatically; the master will see
-   `slave_joined` and your tree position.
+3. Heartbeat and presence start automatically (background thread in the MCP
+   process); the master will see `slave_joined` and your tree position.
 4. If the TUI runs inside tmux, the node auto-detects its own pane and injects
    a short `[mux] ...` hint whenever the master sends a control message or an
    RPC request — you get woken instead of having to wait. On that hint, call
@@ -139,6 +140,8 @@ You receive async RPCs (e.g. from the master or a sibling). For each request:
 
 - `mux_status()` -> identity + connectivity.
 - Keep the node alive for the whole session; the heartbeat is what lets the
-  master notice if you drop.
+  master notice if you drop. The MCP process also runs a watchdog: if its parent
+  (codex) dies or the MQTT link stays down too long, it cleans up retained
+  presence and exits by itself.
 
 See `references/protocol.md` for topic tables and exact message schemas.

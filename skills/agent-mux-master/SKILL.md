@@ -10,20 +10,29 @@ You are the **master** node of an agent mesh. One master coordinates many
 async RPCs, report status, and follow your control messages. You track who is
 online, what each subtree is working on, and which files are at risk of conflict.
 
-Transport is MQTT (async RPC core in `scripts/mux_rpc.py`) wrapped as MCP tools
-(`scripts/mux_mcp.py`). The node is created **lazily** — nothing connects until
-you call `mux_init` (or the server was launched with `--role master`).
+Transport is MQTT; the node is a **single shared Rust MCP server**
+(`agent-mux` binary, one binary for both roles — role comes from `--role` or
+from `mux_init(role=...)`). The node is created **lazily**: nothing connects
+until you call `mux_init` after this skill loads (or it auto-initializes in the
+background when launched with `--role master` and a session id is known).
 
 ## Prerequisites / setup (one-time)
 
-- Broker: `docker compose up -d` in `scripts/` (mosquitto, no password, port 1883).
-- Dependencies: `python3.13 -m pip install -r scripts/requirements.txt` (Python >= 3.10).
+- Broker: `docker compose up -d` in
+  `<repo>/skills/agent-mux-master/scripts/` (mosquitto, no password, port 1883).
+- Build the server once: `cargo build --release` in `<repo>/agent-mux`
+  (rust-toolchain pinned to `1.94.0`, tokio async). Binary:
+  `<repo>/agent-mux/target/release/agent-mux`.
 - MCP config (in `~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.agent-mux-master]
-command = "python3.13"
-args = ["<ABSOLUTE_PATH>/scripts/mux_mcp.py", "--role", "master"]
+command = "<repo>/agent-mux/target/release/agent-mux"
+args = ["--role", "master"]
+
+[mcp_servers.agent-mux-slave]
+command = "<repo>/agent-mux/target/release/agent-mux"
+args = ["--role", "slave"]
 ```
 
 - Your session id comes from `$CODEX_THREAD_ID`. If it is unset, **ask the agent
@@ -34,13 +43,19 @@ args = ["<ABSOLUTE_PATH>/scripts/mux_mcp.py", "--role", "master"]
 1. Read `references/protocol.md` for the full topic/message spec.
 2. Initialize the node: `mux_init(role="master")` (skip if already auto-inited
    via `--role`). If it fails, check the broker is up.
-3. Wait for slaves: loop `wait_events(timeout=...)` and act on:
+3. Do **not** block waiting for messages — master messages arrive
+   asynchronously. If your TUI runs inside tmux, the MCP server injects a
+   `[mux] ... call mux_pull ...` hint whenever a slave joins/reports or a
+   message arrives, and you call `mux_pull()` to fetch it; otherwise call
+   `mux_pull()` at each turn boundary.
+4. Wait for slaves: loop `mux_pull()` / `wait_events(timeout=...)` and act on:
    - `slave_joined` -> new slave online (with `parent_id` -> subtree placement).
-   - `slave_left` -> slave offline; check `list_pending()` for RPCs targeting it
-     and plan reassignment.
+   - `slave_left` -> slave offline (heartbeat timeout or LWT); check
+     `list_pending()` for RPCs targeting it and plan reassignment.
    - `status` -> slave reported state/plan_files/blocked_reason.
    - `ctrl_ack` -> slave accepted a control message.
-4. Build the tree with `topology()`; track each slave's subtree.
+   - `rpc_request` -> a slave RPCed you; answer with `rpc_reply`.
+5. Build the tree with `topology()`; track each slave's subtree.
 
 ## Coordination rules (the core protocol)
 
@@ -86,7 +101,8 @@ Evaluate work continuously and assign it so conflicts are minimized:
 - `get_result(request_id, wait=...)` blocks until done/failed.
 - If the target is a slave, the slave's agent answers via
   `wait_rpc_requests()` + `rpc_reply()`; if no one answers it stays pending.
-- Slaves can RPC you: poll `wait_rpc_requests()` and answer with `rpc_reply()`.
+- Slaves can RPC you: poll `mux_pull()` / `wait_rpc_requests()` and answer with
+  `rpc_reply()`.
 
 ## Zone locks
 

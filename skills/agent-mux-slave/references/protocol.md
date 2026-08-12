@@ -47,13 +47,14 @@ Topic root = config dir with the home prefix stripped (`~/mqtt` -> `mqtt`).
    `ctrl_ack` / `rpc_request` / `conflict_reported`; slave receives
    `rpc_request` events and control messages. Codex CLI cannot receive
    server-pushed MCP notifications, so delivery uses two channels:
-   - **tmux wake (push).** When a slave's TUI runs inside tmux, its MCP server
-     finds its own pane by matching `pane_pid` against the process ancestor
-     chain (codex does not export `$TMUX_PANE` to MCP servers); `mux_init`
-     also accepts `tmux_pane` as an explicit override. On a new control
-     message or RPC request it injects a short `[mux] ... call mux_pull ...`
-     hint into the pane (debounced). Only a hint goes through tmux — the
-     message itself stays queued in the MCP process.
+   - **tmux wake (push).** When a node's TUI runs inside tmux (master **and**
+     slave), its MCP server finds its own pane by matching `pane_pid` against
+     the process ancestor chain (codex does not export `$TMUX_PANE` to MCP
+     servers); `mux_init` also accepts `tmux_pane` as an explicit override.
+     On a new control message, RPC request, or slave join/status event it
+     injects a short `[mux] ... call mux_pull ...` hint into the pane
+     (debounced). Only a hint goes through tmux — the message itself stays
+     queued in the MCP process.
    - **mux_pull (poll at turn boundaries).** `mux_pull()` non-blockingly drains
      the node's queues: `{control[], rpc_requests[], events[]}`. The agent
      calls it at turn boundaries / when idle, so nothing is missed without
@@ -118,26 +119,32 @@ queued owner. Slaves observe the retained snapshot via `get_zone_snapshot()`.
   "hb_interval": 5.0, "hb_timeout": 15.0, "rpc_timeout": 30.0, "qos": 1 }
 ```
 
-Env vars: `CODEX_THREAD_ID` (session id), `AGENT_MUX_ROLE` (optional auto-init).
+Env vars: `CODEX_THREAD_ID` (session id, required; never invent one),
+`AGENT_MUX_NO_TMUX=1` (opt out of tmux wake injection, e.g. in tests).
 
 ## MCP configuration (Codex)
 
-Add to `~/.codex/config.toml` (or per-project config); each node gets its own
-server process so role comes from `--role` (or from `mux_init` in-session):
+One shared Rust binary serves both roles (`--role master|slave`); each node
+gets its own server process. Build once with `cargo build --release` in
+`<repo>/agent-mux` (rust-toolchain pinned to `1.94.0`, tokio async), then add
+to `~/.codex/config.toml` (or per-project config):
 
 ```toml
 [mcp_servers.agent-mux-master]
-command = "python3.13"
-args = ["/Users/loongtao/skills/skills/agent-mux-master/scripts/mux_mcp.py", "--role", "master"]
+command = "<repo>/agent-mux/target/release/agent-mux"
+args = ["--role", "master"]
 
 [mcp_servers.agent-mux-slave]
-command = "python3.13"
-args = ["/Users/loongtao/skills/skills/agent-mux-slave/scripts/mux_mcp.py", "--role", "slave"]
+command = "<repo>/agent-mux/target/release/agent-mux"
+args = ["--role", "slave"]
 # blocking receive tools (wait_control/wait_events/wait_rpc_requests) wait
 # inside the MCP call; raise the tool timeout so longer waits are allowed
 tool_timeout_sec = 300
 ```
 
-Requirements: Python >= 3.10, `pip install -r requirements.txt`
-(`paho-mqtt>=2.0.0`, `mcp>=1.12.4`), broker from `docker-compose.yml`
+When `--role` is given and a session id is known (`--session-id` or
+`$CODEX_THREAD_ID`), the server auto-initializes in the background; otherwise
+initialization is deferred — the agent calls `mux_init(role=..., session_id=...)`
+after the skill loads. Requirements: Rust toolchain (1.94.0 per
+`rust-toolchain.toml`), broker from `docker-compose.yml`
 (`docker compose up -d`).

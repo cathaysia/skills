@@ -1,0 +1,17 @@
+[package]
+name = "agent-mux"
+version = "0.1.0"
+edition = "2024"
+description = "MQTT-based async RPC + presence + coordination mesh for Codex agents (master/slave MCP server, single binary)"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "process", "signal"] }
+rumqttc = "0.25.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+libc = "0.2"
+
+[profile.release]
+strip = true
