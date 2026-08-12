@@ -1,0 +1,17 @@
+# agent-mux MQTT broker (mosquitto, no password). Start with:
+#   docker compose up -d
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: agent-mux-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt-data:/mosquitto/data
+      - mqtt-log:/mosquitto/log
+
+volumes:
+  mqtt-data:
+  mqtt-log:
