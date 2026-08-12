@@ -33,7 +33,7 @@ cargo build --release        # rust-toolchain.toml pins 1.94.0
 The bundled Mosquitto stack (no password, port 1883):
 
 ```sh
-docker compose -f ../skills/agent-mux-master/scripts/docker-compose.yml up -d
+docker compose up -d    # from the agent-mux dir (agent-mux/docker-compose.yml)
 ```
 
 ## MCP config

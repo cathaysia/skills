@@ -119,5 +119,5 @@ queued owner. Slaves observe the retained snapshot via `get_zone_snapshot()`.
 Broker, build, MCP registration and `mqtt.conf` live in
 `<repo>/agent-mux/README.md` (one shared Rust binary serves both roles via
 `--role master|slave`). Requirements: Rust toolchain (1.94.0 per
-`rust-toolchain.toml`), broker from `docker-compose.yml`
+`rust-toolchain.toml`), broker from `agent-mux/docker-compose.yml`
 (`docker compose up -d`).
