@@ -20,17 +20,18 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
    auto-initialized via `--role master`). Your session id comes from
    `$CODEX_THREAD_ID`; if it is unset, **ask the user for the Codex session id**
    — never invent one. If init fails, check the broker is up.
-2. Do **not** block waiting for messages. If the TUI runs inside tmux, the node
-   injects a `[mux] ... call mux_pull ...` hint whenever a slave joins/reports
-   or a message arrives; call `mux_pull()` then. Otherwise call `mux_pull()` at
-   each turn boundary.
+2. Then **stop — do not wait.** The node is passive: when a slave joins/reports
+   or a message arrives it injects a `[mux] ... call mux_pull ...` hint into
+   your tmux pane; call `mux_pull()` then to fetch the queued events. If you
+   are not in tmux, call `mux_pull()` at each turn boundary instead. Never call
+   `wait_events` / `wait_control` to block on input.
 
 ## Coordinating slaves
 
-- `mux_pull()` / `wait_events(timeout=...)` return the events to react to:
-  `slave_joined`, `slave_left`, `status`, `ctrl_ack`, `rpc_request`,
-  `conflict_reported`. `topology()` shows the slave tree; `mux_status()` gives a
-  compact summary.
+- `mux_pull()` returns the events to react to: `slave_joined`, `slave_left`,
+  `status`, `ctrl_ack`, `rpc_request`, `conflict_reported` — the node wakes you
+  via a `[mux]` hint when they arrive. `topology()` shows the slave tree;
+  `mux_status()` gives a compact summary.
 - When a slave drops (`slave_left`), check `list_pending()` for RPCs targeting
   it and reassign or `retry()` them.
 - Schedule work so conflicts are minimized:
@@ -55,8 +56,8 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
   `get_result()` waits for it, `list_pending()` shows outstanding ones.
 - `retry(request_id)` re-publishes a pending/failed RPC (e.g. after the target
   slave reconnects); `cancel(request_id)` drops one.
-- Slaves can RPC you: poll `mux_pull()` / `wait_rpc_requests()` and answer with
-  `rpc_reply()`.
+- Slaves can RPC you: `mux_pull()` (or the `[mux]` wake) delivers their
+  `rpc_request`s; answer with `rpc_reply()`.
 
 ## Learning from conflicts
 

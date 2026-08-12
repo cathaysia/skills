@@ -62,7 +62,7 @@ agent-mux [--role master|slave] [--session-id <sid>] [--config <dir>] [--root <t
   --role        auto-init role (default: wait for the mux_init tool)
   --session-id  codex session id (default $CODEX_THREAD_ID)
   --config      config dir holding mqtt.conf (default ~/mqtt)
-  --root        mqtt topic root override (default: config dir with home stripped)
+  --root        mqtt topic root override (default: project dir / git root with home stripped)
 ```
 
 Environment:
@@ -80,8 +80,9 @@ Environment:
  "hb_interval": 1.0, "hb_timeout": 3.0, "rpc_timeout": 5.0, "qos": 1}
 ```
 
-The MQTT topic root is the config dir path with the home prefix stripped
-(`~/mqtt` -> `mqtt`), overridable with `--root`.
+The MQTT topic root defaults to the project directory (git repo root, or
+the cwd) with the home prefix stripped — each project gets its own isolated
+mesh. Override with `--root` (or a `root` field in `mqtt.conf`).
 
 ## Layout
 

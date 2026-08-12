@@ -18,7 +18,7 @@ so the master can coordinate per-subtree.
 
 ## Topic layout
 
-Topic root = config dir with the home prefix stripped (`~/mqtt` -> `mqtt`).
+Topic root = project directory (git repo root / cwd) with the home prefix stripped; override with `--root`.
 
 | Topic | Pub | Sub | Payload (JSON) |
 |---|---|---|---|

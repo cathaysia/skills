@@ -1,16 +1,31 @@
 //! Configuration loading, topic-root computation and session-id resolution.
 //!
-//! Mirrors the Python reference (`mux_rpc.py`): a single config dir (default
-//! `~/mqtt`) holds `mqtt.conf`; the MQTT topic root is the config dir path
-//! with the home prefix stripped (`~/mqtt` -> `mqtt`).
+//! A single config dir (default `~/mqtt`) holds `mqtt.conf`. The MQTT topic
+//! root defaults to the project directory (git repo root / cwd) with the home
+//! prefix stripped, so each project gets its own
+//! isolated mesh; override with `--root` or a `root` field in `mqtt.conf`.
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::env;
 use std::path::{Component, PathBuf};
+use std::sync::OnceLock;
 
 pub const DEFAULT_CONFIG_DIR: &str = "~/mqtt";
 pub const ENV_SESSION_ID: &str = "CODEX_THREAD_ID";
+
+/// Process-level default topic root, remembered at startup (from `--root` or
+/// the project-dir default) so a later `mux_init` without a `root` argument
+/// inherits it instead of recomputing from a possibly different cwd.
+static DEFAULT_ROOT: OnceLock<String> = OnceLock::new();
+
+pub fn set_default_root(root: &str) {
+    let _ = DEFAULT_ROOT.set(root.trim_matches('/').to_string());
+}
+
+pub fn default_root() -> Option<&'static str> {
+    DEFAULT_ROOT.get().map(|s| s.as_str())
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -56,17 +71,15 @@ pub fn home() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
 }
 
-/// Topic root = config dir path with the home prefix stripped (`~/mqtt` -> `mqtt`).
-pub fn topic_root_for(config_dir: &str) -> String {
-    let d = expand(config_dir);
-    let canon = d.canonicalize().unwrap_or_else(|_| d.clone());
-    let home = home().and_then(|h| h.canonicalize().ok());
-    let rel: PathBuf = match &home {
-        Some(h) => canon.strip_prefix(h).map(|r| r.to_path_buf()).unwrap_or_else(|_| {
-            PathBuf::from(canon.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
-        }),
-        None => canon.clone(),
-    };
+/// Home-relative topic path for `p` (home prefix stripped). Returns
+/// `None` when `p` is home itself or not under home.
+fn strip_home(p: &PathBuf) -> Option<String> {
+    let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+    let home = home().and_then(|h| h.canonicalize().ok())?;
+    if canon == home {
+        return None;
+    }
+    let rel = canon.strip_prefix(&home).ok()?;
     let parts: Vec<String> = rel
         .components()
         .filter_map(|c| match c {
@@ -75,10 +88,61 @@ pub fn topic_root_for(config_dir: &str) -> String {
         })
         .collect();
     if parts.is_empty() {
-        "mqtt".to_string()
+        None
     } else {
-        parts.join("/")
+        Some(parts.join("/"))
     }
+}
+
+/// Project directory: the git repository root (via `--git-common-dir`, so
+/// linked worktrees share the main repo's root), else the cwd.
+fn project_dir() -> PathBuf {
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+    {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !raw.is_empty() {
+                let g = PathBuf::from(&raw);
+                let g = if g.is_absolute() {
+                    g
+                } else if let Ok(cwd) = std::env::current_dir() {
+                    cwd.join(g)
+                } else {
+                    g
+                };
+                if let Some(parent) = g.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        return parent.to_path_buf();
+                    }
+                }
+            }
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Topic root = project dir path with the home prefix stripped;
+/// basename fallback when not under home.
+pub fn project_root_for() -> Option<String> {
+    let dir = project_dir();
+    strip_home(&dir).or_else(|| {
+        dir.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+    })
+}
+
+/// Topic root = config dir path with the home prefix stripped (`~/mqtt` -> `mqtt`).
+/// Used only as a fallback when no project dir can be determined.
+pub fn topic_root_for(config_dir: &str) -> String {
+    let d = expand(config_dir);
+    strip_home(&d).unwrap_or_else(|| {
+        d.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "mqtt".to_string())
+    })
 }
 
 /// Load config from `<config_dir>/mqtt.conf` (created with defaults if absent).
@@ -135,7 +199,7 @@ pub fn load_config(config_dir: &str, root: Option<&str>) -> Result<Config> {
         }
     }
     if cfg.root.is_empty() {
-        cfg.root = topic_root_for(config_dir);
+        cfg.root = project_root_for().unwrap_or_else(|| topic_root_for(config_dir));
     }
     Ok(cfg)
 }

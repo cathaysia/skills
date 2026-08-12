@@ -22,7 +22,7 @@ fn print_usage() {
          \x20 --role       auto-init role (default: wait for the mux_init tool)\n\
          \x20 --session-id codex session id (default $CODEX_THREAD_ID)\n\
          \x20 --config     config dir holding mqtt.conf (default ~/mqtt)\n\
-         \x20 --root       mqtt topic root override (default: config dir with home stripped)\n\
+         \x20 --root       mqtt topic root override (default: project dir / git root with home stripped)\n\
          \x20 --help       show this help\n\
          \n\
          The agent calls mux_init(role=..., session_id=<its session id>) after the skill\n\
@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
 
     let config_dir = config_dir.unwrap_or_else(|| config::DEFAULT_CONFIG_DIR.to_string());
     let conf = config::load_config(&config_dir, root.as_deref())?;
+    config::set_default_root(&conf.root);
 
     let initial: Option<std::sync::Arc<node::Node>> = if let Some(r) = &role {
         match config::resolve_session_id(session_id.as_deref()) {
@@ -127,7 +128,7 @@ async fn main() -> Result<()> {
                                     n.stop().await;
                                 }
                             } else {
-                                eprintln!("agent-mux: auto-initialized as {r} ({sid})");
+                                eprintln!("agent-mux: auto-initialized as {r} ({sid}) on topic root '{root}'");
                             }
                         }
                         Err(e) => eprintln!(

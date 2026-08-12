@@ -5,7 +5,7 @@
 //! the agent calls `mux_init` after the master/slave skill loads, or the
 //! process auto-initializes when `--role` is given and a session id is known.
 
-use crate::config::{load_config, resolve_session_id, Config};
+use crate::config::{default_root, load_config, resolve_session_id, Config};
 use crate::node::Node;
 use crate::tmux::TmuxWake;
 use anyhow::Result;
@@ -108,7 +108,8 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
     let parent_id = arg_str(args, "parent_id");
     let master_sid = arg_str(args, "master_sid");
     let config_dir = arg_str_or(args, "config_dir", crate::config::DEFAULT_CONFIG_DIR);
-    let root = arg_str(args, "root");
+    let root = arg_str(args, "root")
+        .or_else(|| default_root().map(|s| s.to_string()));
     let tmux_pane = arg_str(args, "tmux_pane");
 
     let sid = resolve_session_id(session_id.as_deref())
@@ -396,7 +397,8 @@ optional (auto-detected). Returns the node identity.",
             name: "wait_events",
             description: "Wait for mesh events; blocks until at least one arrives (or timeout). Returns the queued \
 events as a list ([] on timeout). Master events: slave_joined, slave_left, status, ctrl_ack, rpc_request, \
-conflict_reported. Slave events: rpc_request. Call ONCE when you are ready to react; do not busy-loop.",
+conflict_reported. Slave events: rpc_request. Prefer mux_pull() at turn boundaries / the tmux [mux] wake; \
+only use this blocking wait when you genuinely want to block.",
             schema: json!({
                 "type": "object",
                 "properties": {"timeout": {"type": ["number", "null"], "description": "seconds to wait (default 30)"}}
@@ -412,9 +414,8 @@ here or by the blocking wait_* tools, so nothing is lost.",
         },
         Tool {
             name: "wait_control",
-            description: "Wait for the next control message from the master (blocks inside the call). The mesh is \
-asynchronous: master messages can arrive at any time, so do NOT poll. Call this ONCE when you genuinely need the \
-master's input; it blocks until a control message arrives or the timeout elapses. Returns \
+            description: "Wait for the next control message from the master (blocks inside the call). Prefer mux_pull() \
+at turn boundaries / the tmux [mux] wake; only use this blocking wait when you genuinely want to block. Returns \
 {\"received\": true, \"message\": {kind, payload, from, request_id, ts}} or \
 {\"received\": false, \"reason\": \"timeout\", \"waited\": <seconds>}.",
             schema: json!({
@@ -425,8 +426,8 @@ master's input; it blocks until a control message arrives or the timeout elapses
         Tool {
             name: "wait_rpc_requests",
             description: "Wait for incoming RPC requests; blocks until at least one (or timeout). Each item has \
-request_id / method / params / from. Answer with rpc_reply(). Returns [] on timeout. Call ONCE when ready to \
-answer; do not busy-loop.",
+request_id / method / params / from. Answer with rpc_reply(). Returns [] on timeout. Prefer mux_pull() at turn \
+boundaries / the tmux [mux] wake; only use this blocking wait when you genuinely want to block.",
             schema: json!({
                 "type": "object",
                 "properties": {"timeout": {"type": ["number", "null"], "description": "seconds to wait (default 30)"}}

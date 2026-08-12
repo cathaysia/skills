@@ -51,15 +51,14 @@ The master coordinates by what you report. Whenever your situation changes:
 - React to control items: `assign` -> adopt the task (and update
   `report_status`), `pause`/`resume` -> stop/continue, `replan` -> adjust your
   plan, `priority` -> reorder your queue.
-- Only if you genuinely need to wait for the master's next input (rare) use
-  `wait_control(timeout=...)` / `wait_rpc_requests(timeout=...)` **once**; do
-  not use them as a polling loop.
+- Never block on the master: rely on the `[mux]` wake (when in tmux) and
+  `mux_pull()` at turn boundaries. Do not call `wait_control` /
+  `wait_rpc_requests` to wait for input.
 
 ## Answering RPCs
 
-- Pick up requests via `mux_pull()` (`rpc_requests`) or
-  `wait_rpc_requests(timeout=...)`. Each item has `request_id`, `method`,
-  `params`, `from`.
+- Pick up requests via `mux_pull()` (`rpc_requests`, or the `[mux]` wake).
+  Each item has `request_id`, `method`, `params`, `from`.
 - Always reply with `rpc_reply(request_id, result=..., error=...)` so the
   caller's pending RPC completes; otherwise it times out and may be retried.
 
