@@ -1,4 +1,4 @@
-//! agent-mux: MQTT-based async RPC + presence + coordination MCP server.
+//! agent-mux: MQTT-based async RPC + liveness + coordination MCP server.
 //!
 //! Single binary, two roles (`--role master|slave`). Talks MCP/JSON-RPC over
 //! stdio. The node is created lazily by the agent via the `mux_init` tool after
@@ -107,9 +107,9 @@ async fn main() -> Result<()> {
                             };
                             if should_stop {
                                 // A same-identity node (from mux_init) is already
-                                // live. Refresh its retained registry/presence so
+                                // live. Refresh its retained registry/hb so
                                 // the correct parent_id wins, then exit quietly
-                                // without clearing our shared retained presence.
+                                // without clearing our shared retained hb.
                                 let same_sid = {
                                     let g = mcp::global_node().lock().unwrap();
                                     g.as_ref().map(|n| n.sid == sid).unwrap_or(false)

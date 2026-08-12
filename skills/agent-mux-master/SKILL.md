@@ -16,33 +16,16 @@ from `mux_init(role=...)`). The node is created **lazily**: nothing connects
 until you call `mux_init` after this skill loads (or it auto-initializes in the
 background when launched with `--role master` and a session id is known).
 
-## Prerequisites / setup (one-time)
-
-- Broker: `docker compose up -d` in
-  `<repo>/skills/agent-mux-master/scripts/` (mosquitto, no password, port 1883).
-- Build the server once: `cargo build --release` in `<repo>/agent-mux`
-  (rust-toolchain pinned to `1.94.0`, tokio async). Binary:
-  `<repo>/agent-mux/target/release/agent-mux`.
-- MCP config (in `~/.codex/config.toml`):
-
-```toml
-[mcp_servers.agent-mux-master]
-command = "<repo>/agent-mux/target/release/agent-mux"
-args = ["--role", "master"]
-
-[mcp_servers.agent-mux-slave]
-command = "<repo>/agent-mux/target/release/agent-mux"
-args = ["--role", "slave"]
-```
-
-- Your session id comes from `$CODEX_THREAD_ID`. If it is unset, **ask the agent
-  for its Codex session id**; never invent/randomize one.
-
 ## Startup workflow
+
+Setup (broker, build, MCP registration, `mqtt.conf`): see
+`<repo>/agent-mux/README.md`.
 
 1. Read `references/protocol.md` for the full topic/message spec.
 2. Initialize the node: `mux_init(role="master")` (skip if already auto-inited
-   via `--role`). If it fails, check the broker is up.
+   via `--role`). Your session id comes from `$CODEX_THREAD_ID`; if it is unset,
+   **ask the agent for its Codex session id** — never invent one. If init fails,
+   check the broker is up.
 3. Do **not** block waiting for messages — master messages arrive
    asynchronously. If your TUI runs inside tmux, the MCP server injects a
    `[mux] ... call mux_pull ...` hint whenever a slave joins/reports or a
@@ -50,7 +33,7 @@ args = ["--role", "slave"]
    `mux_pull()` at each turn boundary.
 4. Wait for slaves: loop `mux_pull()` / `wait_events(timeout=...)` and act on:
    - `slave_joined` -> new slave online (with `parent_id` -> subtree placement).
-   - `slave_left` -> slave offline (heartbeat timeout or LWT); check
+   - `slave_left` -> slave offline (offline flag, heartbeat timeout, or LWT); check
      `list_pending()` for RPCs targeting it and plan reassignment.
    - `status` -> slave reported state/plan_files/blocked_reason.
    - `ctrl_ack` -> slave accepted a control message.

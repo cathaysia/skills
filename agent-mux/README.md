@@ -1,14 +1,16 @@
 # agent-mux
 
-MQTT-based async RPC + presence + coordination mesh for Codex agents, as a
+MQTT-based async RPC + liveness + coordination mesh for Codex agents, as a
 **single Rust MCP server binary** that runs in both roles (`master` / `slave`).
 
 - One binary: role comes from `--role master|slave` (or from the `mux_init`
   MCP tool the agent calls after the skill loads).
 - Async RPC over MQTT (rumqttc + tokio): slaves can connect at any time and
   send RPC requests; the master can list pending RPCs and retry them.
-- Presence via heartbeat: each node heartbeats on a background thread so a
-  stalled agent cannot block liveness; the master detects dropped slaves and
+- Liveness via a single retained heartbeat topic (`hb/{sid}`): slaves publish
+  `status: "online"` periodically on a background thread so a stalled agent
+  cannot block liveness; graceful shutdown publishes an `offline` flag and the
+  MQTT Last Will covers abrupt loss, so the master detects dropped slaves and
   expires their work.
 - Slave tree: each node reports its parent session id, so the master sees the
   full slave tree and coordinates per-branch.
@@ -85,7 +87,7 @@ The MQTT topic root is the config dir path with the home prefix stripped
 
 - `src/main.rs` — CLI, deferred init, stdio MCP server bootstrap.
 - `src/mcp.rs` — JSON-RPC/MCP tool dispatch (24 tools) + global node slot.
-- `src/node.rs` — MQTT node: async RPC, presence/heartbeat, worktree/zone
+- `src/node.rs` — MQTT node: async RPC, heartbeat/liveness, worktree/zone
   planning, pending queue + retry.
 - `src/tmux.rs` — tmux pane detection + wake injection.
 - `src/config.rs` — config loading, topic-root and session-id resolution.

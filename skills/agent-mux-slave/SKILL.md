@@ -17,35 +17,21 @@ from `mux_init(role=...)`). The node is created **lazily**: nothing connects
 until you call `mux_init` after this skill loads (or it auto-initializes in the
 background when launched with `--role slave` and a session id is known).
 
-## Prerequisites / setup (one-time)
-
-- Broker must be running (started by the master side): `docker compose up -d`
-  in `<repo>/skills/agent-mux-master/scripts/` (mosquitto, no password,
-  port 1883).
-- Build the server once: `cargo build --release` in `<repo>/agent-mux`
-  (rust-toolchain pinned to `1.94.0`, tokio async). Binary:
-  `<repo>/agent-mux/target/release/agent-mux`.
-- MCP config (in `~/.codex/config.toml`):
-
-```toml
-[mcp_servers.agent-mux-slave]
-command = "<repo>/agent-mux/target/release/agent-mux"
-args = ["--role", "slave"]
-```
-
-- Your session id comes from `$CODEX_THREAD_ID`. If it is unset, **ask the agent
-  for its Codex session id**; never invent/randomize one.
-
 ## Startup workflow
 
+Setup (broker, build, MCP registration, `mqtt.conf`): see
+`<repo>/agent-mux/README.md`.
+
 1. Read `references/protocol.md` for the full topic/message spec.
-2. Initialize the node. You must know the master's session id:
+2. Initialize the node. Your session id comes from `$CODEX_THREAD_ID`; if it
+   is unset, **ask the agent for its Codex session id** — never invent one. You
+   must know the master's session id:
    - `mux_init(role="slave", parent_id=<master_sid>)` for a direct child of the
      master, or `parent_id=<parent_slave_sid>` for a deeper tree node.
    - If the master's session id is unknown, use `mux_init(role="slave")` and
      read it from the retained `master` message (the node exposes `mux_status()`).
-3. Heartbeat and presence start automatically (background thread in the MCP
-   process); the master will see `slave_joined` and your tree position.
+3. Heartbeat starts automatically (background thread in the MCP process); the
+   master will see `slave_joined` and your tree position.
 4. If the TUI runs inside tmux, the node auto-detects its own pane and injects
    a short `[mux] ...` hint whenever the master sends a control message or an
    RPC request — you get woken instead of having to wait. On that hint, call
@@ -112,8 +98,8 @@ Workflow:
 3. Only when you genuinely need to **wait** for the master's next input (rare)
    use the blocking `wait_control(timeout=...)` / `wait_rpc_requests(timeout=...)`
    **once** — they block inside the call and return on arrival or timeout. Keep
-   `timeout` below the MCP tool timeout (`tool_timeout_sec = 300` in the config
-   above). Do not use them as a polling loop.
+   `timeout` below the MCP tool timeout configured for the server (see the
+   agent-mux README). Do not use them as a polling loop.
 
 ## Answering RPCs
 
@@ -142,6 +128,6 @@ You receive async RPCs (e.g. from the master or a sibling). For each request:
 - Keep the node alive for the whole session; the heartbeat is what lets the
   master notice if you drop. The MCP process also runs a watchdog: if its parent
   (codex) dies or the MQTT link stays down too long, it cleans up retained
-  presence and exits by itself.
+  hb/registry and exits by itself.
 
 See `references/protocol.md` for topic tables and exact message schemas.

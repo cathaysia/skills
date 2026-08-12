@@ -1,6 +1,6 @@
 //! MQTT mesh node: one process == one node (master or slave).
 //!
-//! Mirrors the Python reference (`mux_rpc.py`): presence/registry/heartbeat
+//! Mirrors the Python reference (`mux_rpc.py`): registry/heartbeat
 //! topics, async RPC with a pending registry, control/ack, status, zone locks
 //! and conflict feedback. All mutable state lives behind a tokio Mutex shared
 //! between the MQTT event-loop task, background tasks (heartbeat/sweep/
@@ -161,10 +161,12 @@ impl Node {
         opts.set_keep_alive(Duration::from_secs(conf.keepalive));
         opts.set_clean_session(true);
         opts.set_request_channel_capacity(1024);
-        let presence_topic = format!("{}/presence/{}", root.trim_matches('/'), sid);
-        let will_payload = json!({"sid": sid, "role": role, "status": "offline", "ts": now_ts()});
+        // LWT: abrupt loss publishes an offline flag on the retained hb topic.
+        let hb_topic = format!("{}/hb/{}", root.trim_matches('/'), sid);
+        let will_payload = json!({"sid": sid, "role": role, "status": "offline",
+                                  "reason": "connection_lost", "ts": now_ts()});
         let will = LastWill::new(
-            presence_topic,
+            hb_topic,
             serde_json::to_vec(&will_payload).unwrap_or_default(),
             qos(conf.qos),
             true,
@@ -255,7 +257,7 @@ impl Node {
     /// Update role parameters (parent id / master sid) on an already-started
     /// node and re-announce so the retained registry carries the new parent.
     /// Used when `mux_init` matches the auto-initialized node instead of
-    /// stopping/recreating it (which would clear retained presence and make
+    /// stopping/recreating it (which would clear retained hb/registry and make
     /// the master see a spurious offline blip).
     pub async fn reconfigure(self: &Arc<Node>, parent_id: Option<String>, master_sid: Option<String>) {
         {
@@ -354,9 +356,10 @@ impl Node {
                             "parent_id": task_node.parent_id(),
                             "role": task_node.role,
                             "state": state,
+                            "status": "online",
                             "ts": now_ts(),
                         })),
-                        false,
+                        true,
                     )
                     .await;
                 }
@@ -488,12 +491,6 @@ impl Node {
             true,
         )
         .await;
-        self.publish(
-            &self.topic(&["presence", self.sid.as_str()]),
-            Some(json!({"sid": self.sid, "role": self.role, "status": "online", "ts": now})),
-            true,
-        )
-        .await;
         if self.role == "master" {
             self.publish(
                 &self.topic(&["master"]),
@@ -507,8 +504,9 @@ impl Node {
             let state = st.get("state").and_then(|v| v.as_str()).unwrap_or("idle");
             self.publish(
                 &self.topic(&["hb", self.sid.as_str()]),
-                Some(json!({"sid": self.sid, "parent_id": self.parent_id(), "role": self.role, "state": state, "ts": now})),
-                false,
+                Some(json!({"sid": self.sid, "parent_id": self.parent_id(), "role": self.role,
+                            "state": state, "status": "online", "ts": now})),
+                true,
             )
             .await;
         }
@@ -552,8 +550,7 @@ impl Node {
         if rel.len() == 2 {
             match rel[0] {
                 "registry" => self.on_registry(rel[1], &data, data_obj_empty).await,
-                "presence" => self.on_presence(rel[1], &data, data_obj_empty).await,
-                "hb" => self.on_hb(rel[1], &data).await,
+                "hb" => self.on_hb(rel[1], &data, data_obj_empty).await,
                 "status" => self.on_status(rel[1], &data).await,
                 "conflict" => self.on_conflict(rel[1], &data).await,
                 "ctrl" if rel[1] == self.sid => self.on_ctrl(&data).await,
@@ -667,71 +664,76 @@ impl Node {
         }
     }
 
-    async fn on_presence(self: &Arc<Node>, sid: &str, data: &Value, empty: bool) {
+    /// Liveness: the single source of truth for slave presence.
+    ///
+    /// A non-empty online payload refreshes the slave's registry entry. An
+    /// empty payload (retained hb cleared) or `status == "offline"` (graceful
+    /// shutdown flag or LWT after abrupt loss) marks the slave offline
+    /// immediately and clears the retained registry entry. The offline ts
+    /// comes from the payload (not now) so a stale tombstone cannot refresh
+    /// last_seen for a node that is actually gone.
+    async fn on_hb(self: &Arc<Node>, sid: &str, data: &Value, empty: bool) {
         if sid == self.sid || self.role != "master" {
             return;
         }
-        let mut offline = false;
-        let mut reason = "presence_offline";
-        let event: Option<Value>;
-        {
+        let offline = empty || data.get("status").and_then(|v| v.as_str()) == Some("offline");
+        if offline {
+            let ts = data.get("ts").and_then(|v| v.as_f64()).unwrap_or_else(now_ts);
+            let reason = data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("hb_offline")
+                .to_string();
             let mut s = self.state.lock().await;
-            let info = s
-                .registry
-                .entry(sid.to_string())
-                .or_insert_with(|| json!({"sid": sid, "last_seen": json!(now_ts())}));
+            let info = s.registry.entry(sid.to_string()).or_insert_with(|| json!({"sid": sid}));
+            info["status"] = json!("offline");
+            info["offline_reason"] = json!(reason);
+            info["last_seen"] = json!(ts);
+            Self::push_event(
+                &mut s,
+                json!({"kind": "slave_left", "session_id": sid, "reason": reason}),
+            );
+            drop(s);
+            self.publish(&self.topic(&["registry", sid]), None, true).await;
+            self.events_notify.notify_one();
+            self.wake();
+            return;
+        }
+        let joined = {
+            let mut s = self.state.lock().await;
+            let info = s.registry.entry(sid.to_string()).or_insert_with(|| json!({"sid": sid}));
+            let was_online = info.get("status").and_then(|v| v.as_str()) == Some("online");
             info["last_seen"] = json!(now_ts());
-            if empty {
-                info["status"] = json!("offline");
-                info["offline_reason"] = json!("presence_cleared");
-                offline = true;
-                reason = "presence_cleared";
-            } else if let Some(st) = data.get("status").and_then(|v| v.as_str()) {
-                info["status"] = json!(st);
-                if st == "offline" {
-                    offline = true;
-                    reason = data.get("reason").and_then(|v| v.as_str()).unwrap_or("presence_offline");
+            info["status"] = json!("online");
+            if info.get("parent_id").is_none() {
+                if let Some(p) = data.get("parent_id") {
+                    info["parent_id"] = p.clone();
                 }
             }
-            let st = info.get("status").and_then(|v| v.as_str()).unwrap_or("offline");
-            if st == "online" {
-                event = Some(json!({"kind": "slave_joined", "session_id": sid,
-                                    "parent_id": info.get("parent_id").cloned().unwrap_or(Value::Null),
-                                    "info": info.clone()}));
-            } else {
-                event = Some(json!({"kind": "slave_left", "session_id": sid, "reason": reason}));
+            if info.get("role").is_none() {
+                if let Some(r) = data.get("role") {
+                    info["role"] = r.clone();
+                }
             }
-            if let Some(ev) = &event {
-                Self::push_event(&mut s, ev.clone());
-            }
-        }
-        if offline {
-            self.publish(&self.topic(&["registry", sid]), None, true).await;
-        }
-        self.events_notify.notify_one();
-        self.wake();
-    }
-
-    async fn on_hb(self: &Arc<Node>, sid: &str, data: &Value) {
-        if sid == self.sid || self.role != "master" {
-            return;
-        }
-        let mut s = self.state.lock().await;
-        let info = s.registry.entry(sid.to_string()).or_insert_with(|| json!({"sid": sid}));
-        info["last_seen"] = json!(now_ts());
-        info["status"] = json!("online");
-        if info.get("parent_id").is_none() {
-            if let Some(p) = data.get("parent_id") {
-                info["parent_id"] = p.clone();
+            let cur = info.get("state").cloned().unwrap_or(json!("unknown"));
+            info["state"] = data.get("state").cloned().unwrap_or(cur);
+            !was_online
+        };
+        if joined {
+            let mut s = self.state.lock().await;
+            let info = s.registry.get(sid).cloned().unwrap_or_else(|| json!({"sid": sid}));
+            let parent = info.get("parent_id").cloned().unwrap_or(Value::Null);
+            Self::push_event(
+                &mut s,
+                json!({"kind": "slave_joined", "session_id": sid, "parent_id": parent, "info": info}),
+            );
+            let wake = self.wake.clone();
+            drop(s);
+            self.events_notify.notify_one();
+            if let Some(w) = wake {
+                w.wake();
             }
         }
-        if info.get("role").is_none() {
-            if let Some(r) = data.get("role") {
-                info["role"] = r.clone();
-            }
-        }
-        let cur = info.get("state").cloned().unwrap_or(json!("unknown"));
-        info["state"] = data.get("state").cloned().unwrap_or(cur);
     }
 
     async fn on_status(self: &Arc<Node>, sid: &str, data: &Value) {
@@ -1393,16 +1395,17 @@ impl Node {
 
     // ---- lifecycle ----
 
-    /// Re-publish the retained registry/presence (used after a same-identity
+    /// Re-publish the retained registry/hb (used after a same-identity
     /// node raced ahead of us, so the live node owns the retained state).
     pub async fn reannounce(self: &Arc<Node>) {
         self.announce().await;
     }
 
-    /// Graceful shutdown: optionally clear retained presence/registry, then
-    /// disconnect and abort tasks. `clear_retained` is false when a live node
-    /// with the same session id is replacing us (clearing would make the
-    /// master see a spurious offline blip for a still-online node).
+    /// Graceful shutdown: publish the hb offline flag and clear the retained
+    /// registry, then disconnect and abort tasks. `clear_retained` is false
+    /// when a live node with the same session id is replacing us (publishing
+    /// offline would make the master see a spurious offline blip for a
+    /// still-online node).
     pub async fn stop_with(self: &Arc<Node>, clear_retained: bool) {
         {
             let mut s = self.state.lock().await;
@@ -1413,8 +1416,14 @@ impl Node {
         }
         if let Some(client) = &self.client {
             if clear_retained {
-                let t = self.topic(&["presence", self.sid.as_str()]);
-                let _ = client.publish(t, qos(self.conf.qos), true, Vec::new()).await;
+                // Graceful leave: publish the offline flag on the retained hb
+                // topic so the master sees `slave_left` immediately instead of
+                // waiting for hb_timeout. Abrupt loss is covered by the LWT.
+                let t = self.topic(&["hb", self.sid.as_str()]);
+                let payload = json!({"sid": self.sid, "status": "offline",
+                                     "reason": "shutdown", "ts": now_ts()});
+                let _ = client.publish(t, qos(self.conf.qos), true,
+                                       serde_json::to_vec(&payload).unwrap_or_default()).await;
                 let t = self.topic(&["registry", self.sid.as_str()]);
                 let _ = client.publish(t, qos(self.conf.qos), true, Vec::new()).await;
             }

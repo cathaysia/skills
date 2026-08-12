@@ -117,7 +117,7 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
 
     // Reuse an existing node when role + session id match (e.g. the process
     // auto-initialized at startup with the same session). Reconfiguring instead
-    // of stopping/recreating avoids clearing the retained presence on the
+    // of stopping/recreating avoids clearing the retained hb/registry on the
     // broker, which would make the master see a spurious offline blip.
     let reuse = {
         let g = global_node().lock().unwrap();
@@ -762,7 +762,7 @@ pub async fn run(initial: Option<Arc<Node>>) {
         }
     }
 
-    // graceful shutdown: clear retained presence/registry, stop the node
+    // graceful shutdown: publish hb offline flag, clear retained registry, stop the node
     if let Some(n) = global_node().lock().unwrap().take() {
         n.stop().await;
     }

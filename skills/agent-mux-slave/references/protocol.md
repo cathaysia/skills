@@ -1,13 +1,13 @@
 # agent-mux protocol
 
-MQTT-based asynchronous RPC + presence + coordination for one **master** and many
+MQTT-based asynchronous RPC + liveness + coordination for one **master** and many
 **slaves**. Slaves may be arranged in a **tree** (each slave has a `parent_id`),
 so the master can coordinate per-subtree.
 
 ## Roles and topology
 
 - **master** (single): subscribes the whole topic root, builds the slave tree,
-  tracks heartbeats/presence, keeps the pending-RPC registry, owns the zone-lock
+  tracks heartbeats/liveness, keeps the pending-RPC registry, owns the zone-lock
   registry, sends control messages.
 - **slave** (many): registers with an optional `parent_id` (the master's session
   id, or another slave's session id) -> the mesh is a tree. Heartbeats, reports
@@ -23,8 +23,7 @@ Topic root = config dir with the home prefix stripped (`~/mqtt` -> `mqtt`).
 | Topic | Pub | Sub | Payload (JSON) |
 |---|---|---|---|
 | `{root}/registry/{sid}` | every node (retained) | master | `{sid, parent_id, role, joined_at}` |
-| `{root}/presence/{sid}` | every node (retained, LWT) | master | `{sid, role, status: online\|offline, ts}` |
-| `{root}/hb/{sid}` | slave | master | `{sid, parent_id, role, state, ts}` |
+| `{root}/hb/{sid}` | slave (retained, LWT) | master | `{sid, parent_id, role, state, status: online\|offline, reason?, ts}` |
 | `{root}/status/{sid}` | slave (retained) | master | `{sid, parent_id, state, plan_files[], message, blocked_reason, ts}` |
 | `{root}/ctrl/{sid}` | master | slave | `{kind, payload, from, request_id, ts}` |
 | `{root}/ctrl_ack/{sid}` | slave | master | `{request_id, ok, from, ts}` |
@@ -37,12 +36,17 @@ Topic root = config dir with the home prefix stripped (`~/mqtt` -> `mqtt`).
 
 ## Lifecycle
 
-1. `mux_init(role=...)` -> node connects, subscribes, announces (registry +
-   presence retained), publishes `{root}/master` (master) or a heartbeat (slave).
-2. Slave heartbeat loop publishes `{root}/hb/{sid}` every `hb_interval` (5 s).
-3. Master sweep loop marks a slave offline if `last_seen` is older than
-   `hb_timeout` (15 s). Graceful leave publishes presence `offline` (LWT covers
-   abrupt loss).
+1. `mux_init(role=...)` -> node connects, subscribes, announces (registry
+   retained + hb retained with `status: "online"`), publishes `{root}/master`
+   (master) or a heartbeat (slave).
+2. Slave heartbeat loop publishes a retained `{root}/hb/{sid}` every
+   `hb_interval`; it carries `status: "online"` and the current `state`.
+3. Liveness is a single retained hb topic. Leave is explicit: graceful shutdown
+   publishes `status: "offline", reason: "shutdown"` on `{root}/hb/{sid}`, and
+   abrupt loss is covered by the MQTT Last Will (`reason: "connection_lost"`).
+   The master emits `slave_left` immediately on either flag; the sweep loop only
+   catches silent stalls — it marks a slave offline when `last_seen` is older
+   than `hb_timeout`.
 4. Events: master receives `slave_joined` / `slave_left` / `status` /
    `ctrl_ack` / `rpc_request` / `conflict_reported`; slave receives
    `rpc_request` events and control messages. Codex CLI cannot receive
@@ -110,41 +114,10 @@ Master-owned registry of `path -> {owner, queued[]}` published retained on
 owner holds it (FIFO queue); `zone_release(path, owner)` hands over to the next
 queued owner. Slaves observe the retained snapshot via `get_zone_snapshot()`.
 
-## Config
+## Setup / configuration
 
-`~/mqtt/mqtt.conf` (JSON, auto-created) overrides defaults:
-
-```json
-{ "host": "127.0.0.1", "port": 1883, "keepalive": 60,
-  "hb_interval": 5.0, "hb_timeout": 15.0, "rpc_timeout": 30.0, "qos": 1 }
-```
-
-Env vars: `CODEX_THREAD_ID` (session id, required; never invent one),
-`AGENT_MUX_NO_TMUX=1` (opt out of tmux wake injection, e.g. in tests).
-
-## MCP configuration (Codex)
-
-One shared Rust binary serves both roles (`--role master|slave`); each node
-gets its own server process. Build once with `cargo build --release` in
-`<repo>/agent-mux` (rust-toolchain pinned to `1.94.0`, tokio async), then add
-to `~/.codex/config.toml` (or per-project config):
-
-```toml
-[mcp_servers.agent-mux-master]
-command = "<repo>/agent-mux/target/release/agent-mux"
-args = ["--role", "master"]
-
-[mcp_servers.agent-mux-slave]
-command = "<repo>/agent-mux/target/release/agent-mux"
-args = ["--role", "slave"]
-# blocking receive tools (wait_control/wait_events/wait_rpc_requests) wait
-# inside the MCP call; raise the tool timeout so longer waits are allowed
-tool_timeout_sec = 300
-```
-
-When `--role` is given and a session id is known (`--session-id` or
-`$CODEX_THREAD_ID`), the server auto-initializes in the background; otherwise
-initialization is deferred — the agent calls `mux_init(role=..., session_id=...)`
-after the skill loads. Requirements: Rust toolchain (1.94.0 per
+Broker, build, MCP registration and `mqtt.conf` live in
+`<repo>/agent-mux/README.md` (one shared Rust binary serves both roles via
+`--role master|slave`). Requirements: Rust toolchain (1.94.0 per
 `rust-toolchain.toml`), broker from `docker-compose.yml`
 (`docker compose up -d`).
