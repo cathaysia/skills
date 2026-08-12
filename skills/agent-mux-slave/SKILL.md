@@ -26,7 +26,8 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
 2. The heartbeat is automatic (background thread in the MCP process). Do **not**
    block at startup waiting for the master: it only sends control when it has
    something to coordinate. Do your own work first, and check `mux_pull()` at
-   turn boundaries (or when a `[mux]` hint wakes you inside tmux).
+   turn boundaries (or when a `[mux]` wake hint arrives — via MCP notify when
+   your agent supports it, else tmux).
 
 ## Reporting status
 
@@ -51,13 +52,13 @@ The master coordinates by what you report. Whenever your situation changes:
 - React to control items: `assign` -> adopt the task (and update
   `report_status`), `pause`/`resume` -> stop/continue, `replan` -> adjust your
   plan, `priority` -> reorder your queue.
-- Never block on the master: rely on the `[mux]` wake (when in tmux) and
-  `mux_pull()` at turn boundaries. Do not call `wait_control` /
-  `wait_rpc_requests` to wait for input.
+- Never block on the master: rely on the `[mux]` wake (MCP notify when your
+  agent supports it, else tmux) and `mux_pull()` at turn boundaries. Do not
+  call `wait_control` / `wait_rpc_requests` to wait for input.
 
 ## Answering RPCs
 
-- Pick up requests via `mux_pull()` (`rpc_requests`, or the `[mux]` wake).
+- Pick up requests via `mux_pull()` (`rpc_requests`, or the `[mux]` wake hint).
   Each item has `request_id`, `method`, `params`, `from`.
 - Always reply with `rpc_reply(request_id, result=..., error=...)` so the
   caller's pending RPC completes; otherwise it times out and may be retried.

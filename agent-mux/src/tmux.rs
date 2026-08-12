@@ -1,19 +1,19 @@
 //! tmux wake (push channel).
 //!
-//! Codex CLI cannot receive server-pushed MCP notifications, but when the TUI
-//! runs inside tmux the MCP server (a child of the codex process) can find its
-//! own pane (pane_pid appears in the process ancestor chain) and inject a short
-//! wake hint into that pane (`send-keys -l` + Enter). The agent sees it as a
-//! user message and calls `mux_pull()` to drain the real queues. Business data
-//! never goes through tmux -- only a hint.
+//! Fallback wake channel (MCP notify is preferred when the agent supports it):
+//! when the TUI runs inside tmux the MCP server (a child of the codex process)
+//! can find its own pane (pane_pid appears in the process ancestor chain) and
+//! inject a short wake hint into that pane (`send-keys -l` + Enter). The agent
+//! sees it as a user message and calls `mux_pull()` to drain the real queues.
+//! Business data never goes through tmux -- only a hint.
 
 use std::collections::HashSet;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const WAKE_TEXT: &str = "[mux] new message arrived: call mux_pull to view and handle it.";
+use crate::wake::WAKE_TEXT;
+
 const DEBOUNCE: Duration = Duration::from_millis(1500);
 
 pub struct TmuxWake {
@@ -36,14 +36,16 @@ impl TmuxWake {
     /// panes; finally every pane is scanned and the first whose pane_pid is in
     /// our ancestor chain is chosen (codex panes preferred).
     pub fn detect(pane_override: Option<String>) -> Option<String> {
+        // An explicit pane override (mux_init(tmux_pane=...)) wins over
+        // auto-detection and the test/CI opt-out below.
+        if let Some(p) = pane_override
+            && !p.trim().is_empty()
+        {
+            return Some(p.trim().to_string());
+        }
         // Opt-out for tests / non-interactive runs: AGENT_MUX_NO_TMUX=1.
         if std::env::var_os("AGENT_MUX_NO_TMUX").is_some() {
             return None;
-        }
-        if let Some(p) = pane_override {
-            if !p.trim().is_empty() {
-                return Some(p.trim().to_string());
-            }
         }
         let ancestors = ancestor_pids();
         if ancestors.is_empty() {
@@ -86,7 +88,7 @@ impl TmuxWake {
     }
 
     /// Best-effort, debounced wake: inject the hint into the pane.
-    pub fn wake(self: &Arc<TmuxWake>) {
+    pub fn wake(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -96,16 +98,16 @@ impl TmuxWake {
             return;
         }
         self.last.store(now, Ordering::Relaxed);
-        let this = self.clone();
+        let pane = self.pane.clone();
         tokio::task::spawn_blocking(move || {
             // Type the hint first, then give the TUI a moment to render it into
             // the input box before sending Enter (verified in e2e).
             let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &this.pane, "-l", WAKE_TEXT])
+                .args(["send-keys", "-t", &pane, "-l", WAKE_TEXT])
                 .status();
             std::thread::sleep(Duration::from_millis(400));
             let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &this.pane, "Enter"])
+                .args(["send-keys", "-t", &pane, "Enter"])
                 .status();
         });
     }

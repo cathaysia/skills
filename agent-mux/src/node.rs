@@ -7,7 +7,7 @@
 //! watchdog) and MCP tool handlers.
 
 use crate::config::{now_ts, Config};
-use crate::tmux::TmuxWake;
+use crate::wake::Wake;
 use anyhow::{anyhow, Result};
 use rumqttc::{AsyncClient, Event, EventLoop, LastWill, MqttOptions, Packet, QoS};
 use serde_json::{json, Map, Value};
@@ -126,7 +126,7 @@ pub struct Node {
     pub ready_notify: Arc<Notify>,
     client: Option<AsyncClient>,
     tasks: std::sync::Mutex<Vec<JoinHandle<()>>>,
-    pub wake: Option<Arc<TmuxWake>>,
+    pub wake: Option<Arc<dyn Wake>>,
 }
 
 fn qos(v: u8) -> QoS {
@@ -148,7 +148,7 @@ impl Node {
         root: &str,
         config_dir: &str,
         conf: &Config,
-        wake: Option<Arc<TmuxWake>>,
+        wake: Option<Arc<dyn Wake>>,
     ) -> Result<Arc<Node>> {
         let cid = format!(
             "mux-{}-{}-{}-{}",
@@ -285,6 +285,7 @@ impl Node {
             "master_session_id": s.master_sid,
             "connected": s.connected,
             "status": s.status,
+            "wake": self.wake.as_ref().map(|w| w.name()).unwrap_or("none"),
         })
     }
 

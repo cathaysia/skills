@@ -37,6 +37,9 @@ pub struct Config {
     pub rpc_timeout: f64,
     pub qos: u8,
     pub root: String,
+    /// Wake channel preference: "mcp" | "tmux" | "none" (default: MCP notify
+    /// when the agent supports it, else tmux, else error).
+    pub wake: Option<String>,
 }
 
 impl Default for Config {
@@ -50,6 +53,7 @@ impl Default for Config {
             rpc_timeout: 30.0,
             qos: 1,
             root: String::new(),
+            wake: None,
         }
     }
 }
@@ -175,6 +179,11 @@ pub fn load_config(config_dir: &str, root: Option<&str>) -> Result<Config> {
         }
         if let Some(n) = v.get("qos").and_then(|x| x.as_u64()) {
             cfg.qos = n as u8;
+        }
+        if let Some(s) = v.get("wake").and_then(|x| x.as_str()) {
+            if !s.trim().is_empty() {
+                cfg.wake = Some(s.trim().to_string());
+            }
         }
         if let Some(s) = v.get("root").and_then(|x| x.as_str()) {
             if !s.is_empty() {

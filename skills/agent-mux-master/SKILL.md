@@ -21,17 +21,18 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
    `$CODEX_THREAD_ID`; if it is unset, **ask the user for the Codex session id**
    — never invent one. If init fails, check the broker is up.
 2. Then **stop — do not wait.** The node is passive: when a slave joins/reports
-   or a message arrives it injects a `[mux] ... call mux_pull ...` hint into
-   your tmux pane; call `mux_pull()` then to fetch the queued events. If you
-   are not in tmux, call `mux_pull()` at each turn boundary instead. Never call
+   or a message arrives it pushes a `[mux] ... call mux_pull ...` wake hint
+   (via MCP notify when your agent supports it, else into your tmux pane);
+   call `mux_pull()` then to fetch the queued events. If no wake channel is
+   available, call `mux_pull()` at each turn boundary instead. Never call
    `wait_events` / `wait_control` to block on input.
 
 ## Coordinating slaves
 
 - `mux_pull()` returns the events to react to: `slave_joined`, `slave_left`,
   `status`, `ctrl_ack`, `rpc_request`, `conflict_reported` — the node wakes you
-  via a `[mux]` hint when they arrive. `topology()` shows the slave tree;
-  `mux_status()` gives a compact summary.
+  via a `[mux]` hint (MCP notify or tmux) when they arrive. `topology()` shows
+  the slave tree; `mux_status()` gives a compact summary.
 - When a slave drops (`slave_left`), check `list_pending()` for RPCs targeting
   it and reassign or `retry()` them.
 - Schedule work so conflicts are minimized:
@@ -56,7 +57,7 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
   `get_result()` waits for it, `list_pending()` shows outstanding ones.
 - `retry(request_id)` re-publishes a pending/failed RPC (e.g. after the target
   slave reconnects); `cancel(request_id)` drops one.
-- Slaves can RPC you: `mux_pull()` (or the `[mux]` wake) delivers their
+- Slaves can RPC you: `mux_pull()` (or the `[mux]` wake hint) delivers their
   `rpc_request`s; answer with `rpc_reply()`.
 
 ## Learning from conflicts

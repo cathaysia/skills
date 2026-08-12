@@ -49,21 +49,34 @@ Topic root = project directory (git repo root / cwd) with the home prefix stripp
    than `hb_timeout`.
 4. Events: master receives `slave_joined` / `slave_left` / `status` /
    `ctrl_ack` / `rpc_request` / `conflict_reported`; slave receives
-   `rpc_request` events and control messages. Codex CLI cannot receive
-   server-pushed MCP notifications, so delivery uses two channels:
-   - **tmux wake (push).** When a node's TUI runs inside tmux (master **and**
-     slave), its MCP server finds its own pane by matching `pane_pid` against
-     the process ancestor chain (codex does not export `$TMUX_PANE` to MCP
-     servers); `mux_init` also accepts `tmux_pane` as an explicit override.
-     On a new control message, RPC request, or slave join/status event it
-     injects a short `[mux] ... call mux_pull ...` hint into the pane
-     (debounced). Only a hint goes through tmux — the message itself stays
-     queued in the MCP process.
+   `rpc_request` events and control messages. Delivery uses a wake channel
+   plus a poll, with a fixed priority: **MCP notify > tmux > hard error**.
+   - **MCP notify (push, highest priority).** Any agent that declares it can
+     receive server-pushed MCP notifications (custom `initialize` capability:
+     `capabilities.notify` / `mcpNotify` / `notifications` /
+     `agentMuxNotify`, or `experimental.agentMuxNotify`) gets an id-less
+     `notifications/message` written to the MCP stdout whenever a control
+     message, RPC request, or slave join/status event arrives (debounced).
+     MCP notify always wins over tmux when declared — it cannot be demoted.
+   - **tmux wake (push, fallback).** When the agent does not declare MCP-notify
+     support but its TUI runs inside tmux (master **and** slave), the MCP
+     server finds its own pane by matching `pane_pid` against the process
+     ancestor chain (codex does not export `$TMUX_PANE` to MCP servers);
+     `mux_init` also accepts `tmux_pane` as an explicit override. It injects a
+     short `[mux] ... call mux_pull ...` hint into the pane (debounced). Only a
+     hint goes through tmux — the message itself stays queued in the MCP
+     process.
+   - **Hard error.** If the agent supports neither MCP notify nor tmux, node
+     startup fails with an explicit error (auto-init exits non-zero;
+     `mux_init` returns an error) instead of silently running without
+     notifications. `wake=none` / `AGENT_MUX_WAKE=none` disables notifications
+     explicitly.
    - **mux_pull (poll at turn boundaries).** `mux_pull()` non-blockingly drains
      the node's queues: `{control[], rpc_requests[], events[]}`. The agent
-     calls it at turn boundaries / when idle, so nothing is missed without
-     tmux. Blocking tools (`wait_events`, `wait_control`, `wait_rpc_requests`)
-     remain for the rare case where the agent genuinely wants to wait.
+     calls it at turn boundaries / when idle, so nothing is missed without a
+     push channel. Blocking tools (`wait_events`, `wait_control`,
+     `wait_rpc_requests`) remain for the rare case where the agent genuinely
+     wants to wait.
 
 ## Async RPC
 
@@ -82,12 +95,12 @@ Topic root = project directory (git repo root / cwd) with the home prefix stripp
   (e.g. `pause`, `replan`, `priority`). Delivery is **asynchronous**: the master
   publishes whenever it needs to coordinate; it does not send on a schedule.
 - Slave delivery: on a control message the slave's node ACKs on the master's
-  `ctrl_ack` topic automatically, queues the message, and (when tmux is
-  available) injects a wake hint so the agent calls `mux_pull()`. The slave
-  also calls `mux_pull()` at turn boundaries as a non-tmux-safe fallback; the
-  blocking `wait_control(timeout)` remains for when the agent genuinely wants
-  to wait. Either way the envelope is self-describing:
-  `{"kind", "payload", "from", "request_id", "ts"}`.
+  `ctrl_ack` topic automatically, queues the message, and injects a wake hint
+  (MCP notify when the agent supports it, else tmux) so the agent calls
+  `mux_pull()`. The slave also calls `mux_pull()` at turn boundaries as a
+  push-free fallback; the blocking `wait_control(timeout)` remains for when
+  the agent genuinely wants to wait. Either way the envelope is
+  self-describing: `{"kind", "payload", "from", "request_id", "ts"}`.
 - Slave -> master status: `report_status(state, plan_files, message,
   blocked_reason)`. Call with `state='ready'` and the concrete `plan_files`
   (files you intend to modify) when a plan is complete so the master can

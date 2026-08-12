@@ -7,11 +7,11 @@
 
 use crate::config::{default_root, load_config, resolve_session_id, Config};
 use crate::node::Node;
-use crate::tmux::TmuxWake;
+use crate::wake::{self, Out};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub const SERVER_NAME: &str = "agent-mux";
 
@@ -19,6 +19,34 @@ pub const SERVER_NAME: &str = "agent-mux";
 pub fn global_node() -> &'static Mutex<Option<Arc<Node>>> {
     static NODE: Mutex<Option<Arc<Node>>> = Mutex::new(None);
     &NODE
+}
+
+/// MCP client capabilities observed from the `initialize` handshake.
+#[derive(Default)]
+struct ClientCaps {
+    /// True when the client declares it can receive server-pushed MCP
+    /// notifications (custom capability; the MCP spec has no standard one yet).
+    supports_notify: bool,
+    info: Option<Value>,
+}
+static CLIENT: Mutex<ClientCaps> = Mutex::new(ClientCaps {
+    supports_notify: false,
+    info: None,
+});
+
+fn client_supports_notify() -> bool {
+    CLIENT.lock().unwrap().supports_notify
+}
+
+/// Auto-init spec passed from `main.rs` when `--role` is given. The node is
+/// created only after the `initialize` handshake so the wake channel can honor
+/// the client's MCP-notify support (MCP notify > tmux > hard error).
+pub struct AutoInit {
+    pub role: String,
+    pub sid: String,
+    pub config_dir: String,
+    pub root: String,
+    pub conf: Config,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +139,10 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
     let root = arg_str(args, "root")
         .or_else(|| default_root().map(|s| s.to_string()));
     let tmux_pane = arg_str(args, "tmux_pane");
+    let wake_pref = arg_str(args, "wake")
+        .map(|v| wake::parse_wake_preference(&v))
+        .transpose()
+        .map_err(|e| format!("mux_init: {e}"))?;
 
     let sid = resolve_session_id(session_id.as_deref())
         .map_err(|e| e.to_string() + " Ask the agent for its Codex session id; never invent one.")?;
@@ -124,7 +156,7 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
         let g = global_node().lock().unwrap();
         g.as_ref()
             .filter(|n| n.role == role && n.sid == sid)
-            .map(|n| n.clone())
+            .cloned()
     };
     if let Some(old) = reuse {
         old.reconfigure(parent_id, master_sid).await;
@@ -137,11 +169,14 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
     }
 
     // Different identity: stop any previous node before replacing it.
-    if let Some(old) = global_node().lock().unwrap().take() {
+    let old = global_node().lock().unwrap().take();
+    if let Some(old) = old {
         old.stop().await;
     }
 
-    let wake = TmuxWake::detect(tmux_pane).map(|pane| Arc::new(TmuxWake::new(pane)));
+    let wake =
+        wake::resolve(wake_pref, conf.wake.as_deref(), client_supports_notify(), tmux_pane)
+            .map_err(|e| format!("mux_init: {e}"))?;
     let node = Node::start(
         &role,
         &sid,
@@ -368,7 +403,8 @@ Must be called once after the master/slave skill loads; the role is decided by t
 (agent-mux-master -> 'master', agent-mux-slave -> 'slave'). session_id defaults to \
 $CODEX_THREAD_ID; if that is unset the agent must provide it (ask the user for the Codex \
 session id, never invent one). parent_id (slave only) makes the mesh a tree. tmux_pane is \
-optional (auto-detected). Returns the node identity.",
+optional (auto-detected). The wake channel is MCP notify when the client declares support, \
+else tmux, else an error; override with wake='mcp'|'tmux'|'none'. Returns the node identity.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -378,7 +414,8 @@ optional (auto-detected). Returns the node identity.",
                     "config_dir": {"type": ["string", "null"], "description": "Config dir holding mqtt.conf (default ~/mqtt)"},
                     "root": {"type": ["string", "null"], "description": "MQTT topic root override"},
                     "master_sid": {"type": ["string", "null"], "description": "Known master session id (slave only)"},
-                    "tmux_pane": {"type": ["string", "null"], "description": "tmux pane id for wake injection (auto-detected)"}
+                    "tmux_pane": {"type": ["string", "null"], "description": "tmux pane id for wake injection (auto-detected)"},
+                    "wake": {"type": ["string", "null"], "description": "Wake channel override: 'mcp' (MCP notify), 'tmux', or 'none'. Default: MCP notify when the agent declares support, else tmux, else error."}
                 },
                 "required": ["role"]
             }),
@@ -397,7 +434,7 @@ optional (auto-detected). Returns the node identity.",
             name: "wait_events",
             description: "Wait for mesh events; blocks until at least one arrives (or timeout). Returns the queued \
 events as a list ([] on timeout). Master events: slave_joined, slave_left, status, ctrl_ack, rpc_request, \
-conflict_reported. Slave events: rpc_request. Prefer mux_pull() at turn boundaries / the tmux [mux] wake; \
+conflict_reported. Slave events: rpc_request. Prefer mux_pull() at turn boundaries / the [mux] wake (MCP notify or tmux); \
 only use this blocking wait when you genuinely want to block.",
             schema: json!({
                 "type": "object",
@@ -408,14 +445,14 @@ only use this blocking wait when you genuinely want to block.",
             name: "mux_pull",
             description: "Non-blocking: return all messages already queued for this node. Returns \
 {\"control\": [...], \"rpc_requests\": [...], \"events\": [...]} without waiting. Call this at turn \
-boundaries, or when a tmux wake tells you the master sent something. Messages stay queued until consumed \
+boundaries, or when a wake hint (MCP notify / tmux [mux]) tells you the master sent something. Messages stay queued until consumed \
 here or by the blocking wait_* tools, so nothing is lost.",
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
             name: "wait_control",
             description: "Wait for the next control message from the master (blocks inside the call). Prefer mux_pull() \
-at turn boundaries / the tmux [mux] wake; only use this blocking wait when you genuinely want to block. Returns \
+at turn boundaries / the [mux] wake (MCP notify or tmux); only use this blocking wait when you genuinely want to block. Returns \
 {\"received\": true, \"message\": {kind, payload, from, request_id, ts}} or \
 {\"received\": false, \"reason\": \"timeout\", \"waited\": <seconds>}.",
             schema: json!({
@@ -427,7 +464,7 @@ at turn boundaries / the tmux [mux] wake; only use this blocking wait when you g
             name: "wait_rpc_requests",
             description: "Wait for incoming RPC requests; blocks until at least one (or timeout). Each item has \
 request_id / method / params / from. Answer with rpc_reply(). Returns [] on timeout. Prefer mux_pull() at turn \
-boundaries / the tmux [mux] wake; only use this blocking wait when you genuinely want to block.",
+boundaries / the [mux] wake (MCP notify or tmux); only use this blocking wait when you genuinely want to block.",
             schema: json!({
                 "type": "object",
                 "properties": {"timeout": {"type": ["number", "null"], "description": "seconds to wait (default 30)"}}
@@ -659,9 +696,28 @@ async fn handle_message(msg: Value) -> Option<Value> {
 
     match method {
         "initialize" => {
-            let protocol_version = msg
-                .get("params")
-                .and_then(|p| p.get("protocolVersion"))
+            let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+            // The MCP spec has no standard "inbound notification" capability,
+            // so agent-mux accepts a small set of opt-in markers any agent can
+            // declare. MCP notify is always the highest-priority wake channel
+            // once declared.
+            let caps = params.get("capabilities").cloned().unwrap_or_else(|| json!({}));
+            let supports_notify = caps.get("notify").and_then(|v| v.as_bool()).unwrap_or(false)
+                || caps.get("mcpNotify").and_then(|v| v.as_bool()).unwrap_or(false)
+                || caps.get("notifications").and_then(|v| v.as_bool()).unwrap_or(false)
+                || caps.get("agentMuxNotify").and_then(|v| v.as_bool()).unwrap_or(false)
+                || caps
+                    .get("experimental")
+                    .and_then(|v| v.get("agentMuxNotify"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            {
+                let mut c = CLIENT.lock().unwrap();
+                c.supports_notify = supports_notify;
+                c.info = params.get("clientInfo").cloned();
+            }
+            let protocol_version = params
+                .get("protocolVersion")
                 .and_then(|v| v.as_str())
                 .unwrap_or("2025-03-26")
                 .to_string();
@@ -708,16 +764,74 @@ async fn handle_message(msg: Value) -> Option<Value> {
 // server loop
 // ---------------------------------------------------------------------------
 
-pub async fn run(initial: Option<Arc<Node>>) {
+/// Start the auto-initialized node (from `--role`) using the wake channel
+/// resolved after the `initialize` handshake. Wake-resolution failure is fatal
+/// (the agent supports neither MCP notify nor tmux); MQTT connect failure is
+/// not (the agent can retry via `mux_init`).
+async fn start_auto_init(spec: AutoInit) -> Result<(), String> {
+    let wake = wake::resolve(None, spec.conf.wake.as_deref(), client_supports_notify(), None)
+        .map_err(|e| format!("agent-mux: auto-init failed: {e}"))?;
+    let node = Node::start(
+        &spec.role,
+        &spec.sid,
+        None,
+        None,
+        &spec.root,
+        &spec.config_dir,
+        &spec.conf,
+        wake,
+    )
+    .await;
+    match node {
+        Ok(n) => {
+            let (is_first, same_sid) = {
+                let mut g = global_node().lock().unwrap();
+                if g.is_none() {
+                    *g = Some(n.clone());
+                    (true, false)
+                } else {
+                    // A node already exists (e.g. via run(initial, ...)); keep
+                    // the live one.
+                    (false, g.as_ref().map(|x| x.sid == spec.sid).unwrap_or(false))
+                }
+            };
+            if is_first {
+                eprintln!(
+                    "agent-mux: auto-initialized as {} ({}) on topic root '{}'",
+                    spec.role, spec.sid, spec.root
+                );
+                Ok(())
+            } else if same_sid {
+                // Refresh retained state so the correct parent wins, otherwise
+                // stop quietly.
+                n.reannounce().await;
+                n.stop_with(false).await;
+                Ok(())
+            } else {
+                n.stop().await;
+                Ok(())
+            }
+        }
+        Err(e) => {
+            eprintln!("agent-mux: auto-init failed: {e}; call mux_init after the skill loads");
+            Ok(())
+        }
+    }
+}
+
+pub async fn run(initial: Option<Arc<Node>>, auto: Option<AutoInit>) {
+    // One shared stdout writer: JSON-RPC responses and background wake
+    // notifications serialize on the same mutex, so a notification can never
+    // interleave with a response.
+    let out = Out::global();
     if let Some(n) = initial {
         *global_node().lock().unwrap() = Some(n);
     }
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
-    let stdout = tokio::io::stdout();
-    let mut writer = tokio::io::BufWriter::new(stdout);
     let mut line = String::new();
     let mut exiting = false;
+    let mut auto = auto;
 
     loop {
         line.clear();
@@ -743,20 +857,29 @@ pub async fn run(initial: Option<Arc<Node>>) {
                 continue;
             }
         };
-        if msg.get("method").and_then(|m| m.as_str()) == Some("notifications/exit") {
+        let method = msg
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
+        if method == "notifications/exit" {
             exiting = true;
         }
-        if let Some(resp) = handle_message(msg).await {
-            let out = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
-            if writer.write_all(out.as_bytes()).await.is_err() {
-                break;
-            }
-            if writer.write_all(b"\n").await.is_err() {
-                break;
-            }
-            if writer.flush().await.is_err() {
-                break;
-            }
+        if let Some(resp) = handle_message(msg).await
+            && out.write_json(&resp).await.is_err()
+        {
+            break;
+        }
+        // The node needs the client's capabilities from `initialize` to pick
+        // the wake channel (MCP notify > tmux > hard error), so auto-init is
+        // deferred until right after the handshake response.
+        if method == "initialize"
+            && let Some(spec) = auto.take()
+            && let Err(e) = start_auto_init(spec).await
+        {
+            // start_auto_init already prefixes the error with "agent-mux:".
+            eprintln!("{e}");
+            std::process::exit(1);
         }
         if exiting {
             break;
@@ -764,10 +887,10 @@ pub async fn run(initial: Option<Arc<Node>>) {
     }
 
     // graceful shutdown: publish hb offline flag, clear retained registry, stop the node
-    if let Some(n) = global_node().lock().unwrap().take() {
+    let node = global_node().lock().unwrap().take();
+    if let Some(n) = node {
         n.stop().await;
     }
-    let _ = writer.flush().await;
 }
 
 /// Expose the tool list for tests.

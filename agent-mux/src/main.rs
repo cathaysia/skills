@@ -9,6 +9,7 @@ mod config;
 mod mcp;
 mod node;
 mod tmux;
+mod wake;
 
 use anyhow::Result;
 
@@ -81,63 +82,18 @@ async fn main() -> Result<()> {
     let conf = config::load_config(&config_dir, root.as_deref())?;
     config::set_default_root(&conf.root);
 
-    let initial: Option<std::sync::Arc<node::Node>> = if let Some(r) = &role {
+    // Auto-init is deferred until the MCP `initialize` handshake completes
+    // (mcp::run), so the wake channel can honor the client's MCP-notify
+    // support: MCP notify > tmux > hard error.
+    let auto = if let Some(r) = &role {
         match config::resolve_session_id(session_id.as_deref()) {
-            Ok(sid) => {
-                // Auto-init in the background so the stdio server starts
-                // responding immediately; the agent can still call mux_init
-                // later (which replaces this node).
-                let r = r.clone();
-                let sid = sid.clone();
-                let cfg_dir = config_dir.clone();
-                let conf = conf.clone();
-                let root = conf.root.clone();
-                tokio::spawn(async move {
-                    let wake = tmux::TmuxWake::detect(None)
-                        .map(|pane| std::sync::Arc::new(tmux::TmuxWake::new(pane)));
-                    match node::Node::start(&r, &sid, None, None, &root, &cfg_dir, &conf, wake).await {
-                        Ok(n) => {
-                            let should_stop = {
-                                let mut g = mcp::global_node().lock().unwrap();
-                                if g.is_none() {
-                                    *g = Some(n.clone());
-                                    false
-                                } else {
-                                    true
-                                }
-                            };
-                            if should_stop {
-                                // A same-identity node (from mux_init) is already
-                                // live. Refresh its retained registry/hb so
-                                // the correct parent_id wins, then exit quietly
-                                // without clearing our shared retained hb.
-                                let same_sid = {
-                                    let g = mcp::global_node().lock().unwrap();
-                                    g.as_ref().map(|n| n.sid == sid).unwrap_or(false)
-                                };
-                                if same_sid {
-                                    let existing = {
-                                        let g = mcp::global_node().lock().unwrap();
-                                        g.clone()
-                                    };
-                                    if let Some(existing) = existing {
-                                        existing.reannounce().await;
-                                    }
-                                    n.stop_with(false).await;
-                                } else {
-                                    n.stop().await;
-                                }
-                            } else {
-                                eprintln!("agent-mux: auto-initialized as {r} ({sid}) on topic root '{root}'");
-                            }
-                        }
-                        Err(e) => eprintln!(
-                            "agent-mux: auto-init failed: {e}; call mux_init after the skill loads"
-                        ),
-                    }
-                });
-                None
-            }
+            Ok(sid) => Some(mcp::AutoInit {
+                role: r.clone(),
+                sid,
+                config_dir: config_dir.clone(),
+                root: conf.root.clone(),
+                conf: conf.clone(),
+            }),
             Err(e) => {
                 eprintln!("agent-mux: {e}");
                 eprintln!(
@@ -151,6 +107,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    mcp::run(initial).await;
+    mcp::run(None, auto).await;
+
     Ok(())
 }

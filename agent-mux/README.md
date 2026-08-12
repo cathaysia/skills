@@ -17,8 +17,12 @@ MQTT-based async RPC + liveness + coordination mesh for Codex agents, as a
 - Coordination: the master plans work against conflict-risk zones (git
   worktrees / path zones), serializes agents when conflicts are unavoidable,
   and learns from `report_conflict` feedback.
-- tmux wake: notifications are pushed into a tmux pane (when available) so an
-  idle agent wakes up and pulls pending work, instead of blocking on a poll.
+- Wake channels (push): **MCP notify** is used whenever the agent declares it
+  can receive server-pushed MCP notifications (always the highest priority);
+  otherwise a **tmux wake** is used when the TUI runs inside tmux; if neither
+  is available the node refuses to start (hard error) instead of silently
+  running without notifications. `mux_pull()` at turn boundaries remains the
+  always-safe poll fallback.
 
 ## Build
 
@@ -51,8 +55,10 @@ args = ["--role", "slave"]
 ```
 
 When a session id is available (`$CODEX_THREAD_ID`) the node auto-initializes
-in the background. Otherwise initialization is deferred until the agent calls
-`mux_init` after loading the skill.
+right after the MCP `initialize` handshake, so the wake channel can honor the
+agent's MCP-notify support (MCP notify > tmux > hard error). Otherwise
+initialization is deferred until the agent calls `mux_init` after loading the
+skill.
 
 ## Usage
 
@@ -69,7 +75,11 @@ Environment:
 
 - `CODEX_THREAD_ID` — session id used to identify the node (never random;
   `mux_init` refuses to invent one and asks the agent instead).
-- `AGENT_MUX_NO_TMUX=1` — disable tmux wake injection (useful in tests/CI).
+- `AGENT_MUX_WAKE` — wake channel override: `mcp` | `tmux` | `none`. Default:
+  MCP notify when the agent declares support (always highest priority), else
+  tmux, else a hard error. `none` disables notifications.
+- `AGENT_MUX_NO_TMUX=1` — disable tmux pane auto-detection (useful in
+  tests/CI; an explicit `tmux_pane` override still wins).
 
 ## Configuration
 
@@ -77,7 +87,8 @@ Environment:
 
 ```json
 {"host": "127.0.0.1", "port": 1883, "keepalive": 60,
- "hb_interval": 1.0, "hb_timeout": 3.0, "rpc_timeout": 5.0, "qos": 1}
+ "hb_interval": 1.0, "hb_timeout": 3.0, "rpc_timeout": 5.0, "qos": 1,
+ "wake": "mcp"}  // optional: "mcp" | "tmux" | "none"
 ```
 
 The MQTT topic root defaults to the project directory (git repo root, or
@@ -90,6 +101,8 @@ mesh. Override with `--root` (or a `root` field in `mqtt.conf`).
 - `src/mcp.rs` — JSON-RPC/MCP tool dispatch (23 tools) + global node slot.
 - `src/node.rs` — MQTT node: async RPC, heartbeat/liveness, worktree/zone
   planning, pending queue + retry.
+- `src/wake.rs` — wake channel abstraction: MCP notify (highest priority),
+  tmux fallback, and resolution (error when neither is available).
 - `src/tmux.rs` — tmux pane detection + wake injection.
 - `src/config.rs` — config loading, topic-root and session-id resolution.
 
