@@ -86,11 +86,11 @@ The MQTT topic root is the config dir path with the home prefix stripped
 ## Layout
 
 - `src/main.rs` — CLI, deferred init, stdio MCP server bootstrap.
-- `src/mcp.rs` — JSON-RPC/MCP tool dispatch (24 tools) + global node slot.
+- `src/mcp.rs` — JSON-RPC/MCP tool dispatch (23 tools) + global node slot.
 - `src/node.rs` — MQTT node: async RPC, heartbeat/liveness, worktree/zone
   planning, pending queue + retry.
 - `src/tmux.rs` — tmux pane detection + wake injection.
 - `src/config.rs` — config loading, topic-root and session-id resolution.
 
-See `skills/agent-mux-master/SKILL.md` / `skills/agent-mux-slave/SKILL.md`
-for the agent-facing protocol.
+See `PROTOCOL.md` for the full topic/message spec. The skills only
+describe usage; exact topics/schemas are an implementation detail.

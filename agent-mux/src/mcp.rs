@@ -509,7 +509,7 @@ the result arrives later via get_result() / list_pending().",
         },
         Tool {
             name: "send_control",
-            description: "Send a control message (master -> slave). kind is free-form, e.g. 'pause'.",
+            description: "Send a control message (master -> slave). kind is one of 'assign' (payload: {task, files, priority}), 'pause', 'resume', 'replan' (payload: updated plan), 'priority' (payload: new order) — or any free-form kind.",
             schema: json!({
                 "type": "object",
                 "properties": {
