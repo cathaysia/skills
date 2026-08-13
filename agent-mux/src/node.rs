@@ -998,8 +998,8 @@ impl Node {
             .and_then(|v| v.as_str())
             .unwrap_or(sid)
             .to_string();
-        // A ctrl_ack is an echo (Noise): in digest mode it must not wake the
-        // agent, only advance the digest counters.
+        // A ctrl_ack confirms the manager's control reached the executor; it is
+        // Action (wake + visible in the digest), not dropped noise.
         let mut wake_up = !self.conf.digest_mode;
         {
             let mut s = self.state.lock().await;
@@ -1614,7 +1614,11 @@ impl Node {
         if self.role != "manager" {
             return Err("assign_task is manager-only".to_string());
         }
-        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let kind = payload
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let target_crates = payload.get("target_crates").cloned();
         let files = payload.get("files").cloned();
         if kind.is_empty() || target_crates.is_none() || files.is_none() {
@@ -1622,7 +1626,7 @@ impl Node {
                 "assign payload must include kind, target_crates and files".to_string(),
             );
         }
-        if !task_kind_valid(kind) {
+        if !task_kind_valid(&kind) {
             return Err(format!(
                 "invalid task kind {kind}; must be one of {}",
                 TASK_KINDS.join(", ")
@@ -1631,7 +1635,7 @@ impl Node {
         let task_id = uuid::Uuid::new_v4().simple().to_string();
         let (releases, final_state) = {
             let mut s = self.state.lock().await;
-            let depends_on = compute_depends_on(&s, kind, target_crates.as_ref().unwrap());
+            let depends_on = compute_depends_on(&s, &kind, target_crates.as_ref().unwrap());
             let task = json!({
                 "id": task_id,
                 "kind": kind,
@@ -1657,12 +1661,28 @@ impl Node {
         };
         self.persist_state().await;
         self.send_releases(releases).await;
+        // Deliver the assignment to the executor as a normal control message on
+        // {root}/ctrl/{target}. The task-table bookkeeping above is manager-local;
+        // without this publish the executor never learns it was assigned, and the
+        // manager's steering silently vanishes. The payload carries the task id so
+        // the executor can confirm with report_status(task_id=...).
+        let mut ctrl_payload = payload;
+        if let Some(o) = ctrl_payload.as_object_mut() {
+            o.insert("task_id".to_string(), json!(task_id));
+            o.insert("owner".to_string(), json!(target));
+            o.insert("state".to_string(), json!(final_state));
+        }
+        let control_request_id = self
+            .send_control(target, "assign", Some(ctrl_payload))
+            .await
+            .unwrap_or_default();
         Ok(json!({
             "ok": true,
             "task_id": task_id,
             "kind": kind,
             "owner": target,
             "state": final_state,
+            "control_request_id": control_request_id,
         }))
     }
 
@@ -2444,21 +2464,29 @@ fn classify_event(s: &State, ev: &Value) -> EventClass {
         | "approval_escalation" => EventClass::Action,
         // `done` carries acceptance data -> informational action.
         "done" => EventClass::Action,
+        // An executor joining is a coordination input: the manager must know a
+        // new worker is online (and where in the tree) to include it in the
+        // conflict picture. Not noise.
+        "executor_joined" => EventClass::Action,
         // Task transitions: Done/Failed are actionable; progress is noise.
         "task" => match ev.get("state").and_then(|v| v.as_str()) {
             Some("Done") | Some("Failed") => EventClass::Action,
             _ => EventClass::Noise,
         },
-        // An executor leaving is only actionable when it still has unfinished work.
+        // An executor leaving is actionable when it still has unfinished work
+        // or holds zones — its departure strands them.
         "executor_left" => {
             let sid = ev.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
-            if executor_has_unfinished_tasks(s, sid) {
+            if executor_has_unfinished_tasks(s, sid) || executor_holds_zones(s, sid) {
                 EventClass::Action
             } else {
                 EventClass::Noise
             }
         }
-        // Status echoes classify via the reported state.
+        // Status echoes classify via the reported state. `ready` (with the
+        // declared plan_files) and `working` are the core coordination inputs
+        // the manager must see to prevent collisions; blocked/done/error/
+        // failed/conflict are decisions; only idle echoes are noise.
         "status" => {
             let st = ev
                 .get("info")
@@ -2466,11 +2494,13 @@ fn classify_event(s: &State, ev: &Value) -> EventClass {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             match st {
-                "blocked" | "done" | "error" | "failed" | "conflict" => EventClass::Action,
+                "blocked" | "done" | "error" | "failed" | "conflict" | "ready" | "working" => EventClass::Action,
                 _ => EventClass::Noise,
             }
         }
-        // ctrl_ack echoes, executor_joined and auto-approval traces are noise.
+        // ctrl_ack confirms the manager's steering reached the executor.
+        "ctrl_ack" => EventClass::Action,
+        // Auto-approval traces are informational, not actionable.
         _ => EventClass::Noise,
     }
 }
@@ -2549,6 +2579,11 @@ fn executor_has_unfinished_tasks(s: &State, sid: &str) -> bool {
                 Some("Done") | Some("Failed")
             )
     })
+}
+
+/// Does `sid` currently hold any zone lock?
+fn executor_holds_zones(s: &State, sid: &str) -> bool {
+    s.zones.values().any(|z| z.get("owner").and_then(|v| v.as_str()) == Some(sid))
 }
 
 // ---------------------------------------------------------------------------
@@ -3183,25 +3218,29 @@ mod coordination_tests {
     #[test]
     fn classifier_noise_vs_action() {
         let s = state();
-        // ctrl_ack echoes are noise and count as `ack`.
-        assert_eq!(classify_event(&s, &json!({"kind": "ctrl_ack"})), EventClass::Noise);
-        assert_eq!(noise_kind(&json!({"kind": "ctrl_ack"})), Some("ack"));
-        // progress / ready echo statuses are noise and count as `tick`.
-        for st in ["working", "ready"] {
+        // A ctrl_ack confirms steering reached the executor -> Action.
+        assert_eq!(classify_event(&s, &json!({"kind": "ctrl_ack"})), EventClass::Action);
+        // Idle echoes are the only status noise (counts as `tick`).
+        assert_eq!(
+            classify_event(&s, &json!({"kind": "status", "info": {"state": "idle"}})),
+            EventClass::Noise
+        );
+        assert_eq!(noise_kind(&json!({"kind": "status"})), Some("tick"));
+        // ready (plan_files) and working are coordination inputs -> Action.
+        for st in ["ready", "working"] {
             assert_eq!(
                 classify_event(&s, &json!({"kind": "status", "info": {"state": st}})),
-                EventClass::Noise,
+                EventClass::Action,
                 "status {st}"
             );
         }
-        assert_eq!(noise_kind(&json!({"kind": "status"})), Some("tick"));
         // task progress is noise; completion / failure are actions.
         assert_eq!(classify_event(&s, &json!({"kind": "task", "state": "Ready"})), EventClass::Noise);
         assert_eq!(noise_kind(&json!({"kind": "task"})), Some("tick"));
         assert_eq!(classify_event(&s, &json!({"kind": "task", "state": "Done"})), EventClass::Action);
         assert_eq!(classify_event(&s, &json!({"kind": "task", "state": "Failed"})), EventClass::Action);
-        // executor_joined is noise.
-        assert_eq!(classify_event(&s, &json!({"kind": "executor_joined"})), EventClass::Noise);
+        // An executor joining is a coordination input -> Action.
+        assert_eq!(classify_event(&s, &json!({"kind": "executor_joined"})), EventClass::Action);
 
         // Decision-worthy events are actions.
         for kind in [
@@ -3215,7 +3254,7 @@ mod coordination_tests {
             assert_eq!(classify_event(&s, &json!({"kind": kind})), EventClass::Action, "{kind}");
         }
         // Status echoes of decision-worthy states are actions too.
-        for st in ["blocked", "done", "error", "failed", "conflict"] {
+        for st in ["blocked", "done", "error", "failed", "conflict", "ready", "working"] {
             assert_eq!(
                 classify_event(&s, &json!({"kind": "status", "info": {"state": st}})),
                 EventClass::Action,
@@ -3238,6 +3277,14 @@ mod coordination_tests {
             classify_event(&s, &json!({"kind": "executor_left", "session_id": "idle"})),
             EventClass::Noise
         );
+        // A zone holder leaving is actionable even without tasks (its zone strands).
+        s.zones.insert("/shared/x.rs".to_string(), json!({"owner": "worker", "queued": []}));
+        assert_eq!(
+            classify_event(&s, &json!({"kind": "executor_left", "session_id": "worker"})),
+            EventClass::Action,
+            "zone-holding executor leaving must be actionable"
+        );
+        s.zones.clear();
         // Once the task is done, the same executor leaving is noise again.
         s.tasks.get_mut("t1").unwrap()["state"] = json!("Done");
         assert_eq!(
@@ -3261,21 +3308,27 @@ mod coordination_tests {
         let node = bare_node("manager", "m", None);
         {
             let mut s = node.state.lock().await;
-            Node::push_event(&mut s, json!({"kind": "ctrl_ack", "session_id": "a", "ts": 1.0}));
+            // Real noise: idle status echo + task progress.
+            Node::push_event(&mut s, json!({"kind": "status", "session_id": "a", "info": {"state": "idle"}, "ts": 1.0}));
+            Node::push_event(&mut s, json!({"kind": "task", "task_id": "t1", "state": "Working", "ts": 2.0}));
+            // Action inputs: ack, ready(plan_files), done, blocked.
+            Node::push_event(&mut s, json!({"kind": "ctrl_ack", "session_id": "a", "ts": 3.0}));
             Node::push_event(
                 &mut s,
-                json!({"kind": "status", "session_id": "a", "info": {"state": "working"}, "ts": 2.0}),
+                json!({"kind": "status", "session_id": "a", "info": {"state": "ready", "plan_files": ["src/a.rs"]}, "ts": 4.0}),
             );
-            Node::push_event(&mut s, json!({"kind": "done", "session_id": "a", "ts": 3.0}));
-            Node::push_event(&mut s, json!({"kind": "blocked", "session_id": "a", "reason": "x", "ts": 4.0}));
+            Node::push_event(&mut s, json!({"kind": "done", "session_id": "a", "ts": 5.0}));
+            Node::push_event(&mut s, json!({"kind": "blocked", "session_id": "a", "reason": "x", "ts": 6.0}));
         }
         let d = node.digest(None).await;
-        assert_eq!(d["noise_counts"]["ack"], 1, "{d}");
-        assert_eq!(d["noise_counts"]["tick"], 1, "{d}");
+        assert_eq!(d["noise_counts"]["ack"], 0, "{d}");
+        assert_eq!(d["noise_counts"]["tick"], 2, "{d}");
         let actions = d["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 2, "{d}");
+        assert_eq!(actions.len(), 4, "{d}");
         assert_eq!(actions[0]["kind"], "blocked", "decision-worthy first: {d}");
-        assert_eq!(actions[1]["kind"], "done", "informational last: {d}");
+        assert_eq!(actions[1]["kind"], "status", "ready is a coordination input: {d}");
+        assert_eq!(actions[2]["kind"], "done", "informational last: {d}");
+        assert_eq!(actions[3]["kind"], "ctrl_ack", "ack is a coordination input: {d}");
         let since = d["since"].as_f64().unwrap();
         assert!(since > 0.0);
 

@@ -59,11 +59,16 @@ command = "<repo>/agent-mux/target/release/agent-mux"
 args = ["--role", "executor"]
 ```
 
-When a session id is available (`$CODEX_THREAD_ID`) the node auto-initializes
-right after the MCP `initialize` handshake, so the wake channel can honor the
-agent's MCP-notify support (MCP notify > tmux > hard error). Otherwise
-initialization is deferred until the agent calls `mux_init` after loading the
-skill.
+When a session id is available in the server process environment
+(`$CODEX_THREAD_ID`) the node auto-initializes right after the MCP
+`initialize` handshake, so the wake channel can honor the agent's MCP-notify
+support (MCP notify > tmux > hard error). Otherwise initialization is
+deferred until the agent calls `mux_init` after loading the skill.
+
+Note: `$CODEX_THREAD_ID` is read from the **server process** environment, and
+Codex does not always pass it to the MCP server child process, so the manager
+and executor skills pass `session_id` **explicitly** in `mux_init(...)` —
+never rely on the env var being visible to the server.
 
 ## Usage
 

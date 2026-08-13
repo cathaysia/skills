@@ -1,15 +1,18 @@
 ---
 name: agent-mux-executor
-description: Act as a worker ("executor") node in an MQTT-based multi-agent mesh. Use when you are an executor agent that must connect to the manager (or a parent executor), report your status (state + plan files) so the manager can coordinate, accept the manager's work assignments/control messages and adjust in real time, answer async RPCs, and maintain a heartbeat so the manager can detect when you drop offline.
+description: Act as a worker ("executor") node in an MQTT-based multi-agent mesh. Use when you are an executor agent that must connect to the manager (or a parent executor), report your status and plan_files so the manager can coordinate parallel work and avoid conflicts, answer async RPCs, and maintain a heartbeat so the manager can detect when you drop offline.
 ---
 
 # agent-mux-executor
 
 You are an **executor** node of an agent mesh. You connect to the manager (or a
-parent executor) in a tree, heartbeat to stay alive, report status so the manager
-can schedule work, answer async RPCs, and follow the manager's control
-messages. The server computes scheduling; you confirm assignments, do your
-work, and only escalate what needs a human-level decision.
+parent executor) in a tree, heartbeat to stay alive, and keep the manager
+informed of your state and the files you plan to touch so it can **coordinate
+parallel work and prevent collisions**. **The manager does not hand you your
+work** — your work comes from the user who spawned you (or from a parent
+executor); the manager coordinates that work. You do your own work, answer
+async RPCs, and escalate to the manager only what needs coordination or a
+human-level decision.
 
 The node is a single Rust MCP server (`agent-mux`, one binary for both roles).
 Setup (broker, build, MCP registration, `mqtt.conf`): see
@@ -17,18 +20,23 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
 
 ## Start
 
-1. Initialize the node once:
-   - `mux_init(role="executor", parent_id=<manager_sid>)` for a direct child of the
-     manager, or `parent_id=<parent_executor_sid>` for a deeper tree node.
-   - If the manager's session id is unknown, use `mux_init(role="executor")` and
-     read it from `mux_status()`.
-   Your session id comes from `$CODEX_THREAD_ID`; if it is unset, **ask the
-   user for the Codex session id** — never invent one.
+1. Initialize the node once, passing your session id **explicitly**:
+   - `mux_init(role="executor", session_id=<your Codex session id>,
+     parent_id=<manager_sid>)` for a direct child of the manager, or
+     `parent_id=<parent_executor_sid>` for a deeper tree node.
+   - If the manager's session id is unknown, use
+     `mux_init(role="executor", session_id=<your Codex session id>)` and read
+     it from `mux_status()`.
+   Do **not** rely on auto-init or `$CODEX_THREAD_ID`: the MCP server process
+   does not inherit the interactive shell's environment, so the session id is
+   frequently missing there. If you do not know your session id, **ask the
+   user** — never invent one.
 2. The heartbeat is automatic (background thread in the MCP process). Do **not**
-   block at startup waiting for the manager: it only sends control when it has
-   something to coordinate. Do your own work first, and check `mux_pull()` at
-   turn boundaries (or when a `[mux]` wake hint arrives — via MCP notify when
-   your agent supports it, else tmux).
+   block at startup waiting for the manager: it coordinates, it does not
+   dispatch. **Start your own work first**, and check `mux_pull()` at turn
+   boundaries (or when a `[mux]` wake hint arrives — via MCP notify when your
+   agent supports it, else tmux) so the manager's steering, zone grants and
+   RPCs reach you.
 
 ## Reporting status — 4 states only
 
@@ -36,7 +44,7 @@ The manager coordinates by what you report. Report **only** these 4 states; no
 progress ticks, no echoes, no repeated `working`:
 
 - `report_status(state="blocked", blocked_reason=..., task_id=...)` — waiting
-  on something.
+  on something (e.g. a zone held by another executor).
 - `report_status(state="done", message=..., task_id=...)` — finished (include
   acceptance data in `message` when available).
 - `report_status(state="error", message=..., task_id=...)` — failed; always
@@ -47,28 +55,45 @@ progress ticks, no echoes, no repeated `working`:
   `report_conflict(files=[...], zone=..., description=..., severity=...,
   suggestion=...)` so the manager learns and adjusts.
 
-When you receive an `assign`, confirm it with
-`report_status(state="working", plan_files=[...], message=...)` **including
-the task id, kind, files and target crates** so the manager's task table tracks
-your progress.
+When you **start** a piece of work, announce what it will touch with
+`report_status(state="ready", plan_files=[...], message=...)` (plus
+`target_crates` when relevant). The `plan_files` are the manager's primary
+conflict picture — declare the concrete paths up front so overlaps are caught
+before they happen, and re-declare (via `may_i_touch`) if your write set grows
+mid-flight. If you receive an `assign` steering message (rare — see below),
+confirm it with `report_status(state="working", plan_files=[...], message=...)`
+including the task id, kind, files and target crates so the manager's task
+table tracks it.
 
 ## Receiving manager messages
 
 - `mux_pull()` non-blockingly returns everything queued for you:
   `{"control": [...], "rpc_requests": [...], "events": [...], "watch": [...]}`.
   Call it at the start of every turn / whenever idle.
-- React to control items: `assign` -> adopt the task and confirm it (see
-  above); `pause`/`resume` -> stop/continue; `replan` -> adjust your plan;
-  `priority` -> reorder your queue; `release` -> dependencies are done, you may
-  start the Validate task now.
+- Control items are the manager **steering** your own work when coordination
+  requires it: `assign` (reassign/steer — see "Assign is steering, not
+  dispatching"), `pause`/`resume` -> stop/continue, `replan` -> adjust your
+  plan, `priority` -> reorder your queue, `release` -> dependencies are done,
+  you may run the Validate step now.
 - Never block on the manager: rely on the `[mux]` wake (MCP notify when your
   agent supports it, else tmux) and `mux_pull()` at turn boundaries. Do not
   call `wait_control` / `wait_rpc_requests` to wait for input.
 
+## Assign is steering, not dispatching
+
+Your work normally comes from the user, not from an `assign`. If an `assign`
+control message arrives, it is the manager **re-steering** existing work to
+deconflict (e.g. the original owner died mid-work, or a file must move off an
+overlapping executor). Adopt the reassigned file set as your current scope and
+confirm with `report_status(state="working", ...)`. An `assign` carries `kind`
+(`Src` | `Validate` | `Docs` | `Deps` | `Release`), `target_crates`, `files`
+and a `task_id`; the server builds the dependency graph from it and may later
+send `release` once dependencies clear.
+
 ## P1 / P2 discipline
 
-- In **P1 (parallel changes)** you work only on your assigned `Src`/`Deps`
-  task. If you are assigned a `Validate` task, its state is `scheduled` —
+- In **P1 (parallel changes)** you work on your own `Src`/`Deps` scope. If the
+  manager steers a `Validate` task to you, its state is `scheduled` —
   **never run a full suite early**. Wait for the manager's `release` control
   message, which the server sends automatically once your dependencies are
   `Done`.
@@ -89,7 +114,7 @@ your progress.
   relinquish it with `zone_request(path, release=true)` (async RPCs — await the
   returned request_id with `get_result`). You cannot lock zones yourself:
   `zone_acquire` / `zone_release` are manager-only tools.
-- Never edit a file the manager assigned to another executor or in a high-risk zone
+- Never edit a file another executor claimed or in a high-risk zone
   (lockfiles, generated code, `.git`, build dirs) without confirmation.
 - If your work overlaps a zone owned by another executor, wait or request
   serialization through the manager — do not race.
