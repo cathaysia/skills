@@ -1,7 +1,0 @@
-interface:
-  display_name: "Agent Mux Master"
-  short_description: "Coordinate slave agents over MQTT (async RPC, worktree isolation, conflict avoidance)"
-  default_prompt: "Use $agent-mux-master to act as the coordinator: wait for slave agents, build the slave tree, schedule their work (git worktree isolation, conflict-risk zones, priority, serialization), and track heartbeats/pending RPCs."
-
-policy:
-  allow_implicit_invocation: true

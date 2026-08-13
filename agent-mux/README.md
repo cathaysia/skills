@@ -1,26 +1,26 @@
 # agent-mux
 
 MQTT-based async RPC + liveness + coordination mesh for Codex agents, as a
-**single Rust MCP server binary** that runs in both roles (`master` / `slave`).
+**single Rust MCP server binary** that runs in both roles (`manager` / `executor`).
 
-- One binary: role comes from `--role master|slave` (or from the `mux_init`
+- One binary: role comes from `--role manager|executor` (or from the `mux_init`
   MCP tool the agent calls after the skill loads).
-- Async RPC over MQTT (rumqttc + tokio): slaves can connect at any time and
-  send RPC requests; the master can list pending RPCs and retry them.
-- Liveness via a single retained heartbeat topic (`hb/{sid}`): slaves publish
+- Async RPC over MQTT (rumqttc + tokio): executors can connect at any time and
+  send RPC requests; the manager can list pending RPCs and retry them.
+- Liveness via a single retained heartbeat topic (`hb/{sid}`): executors publish
   `status: "online"` periodically on a background thread so a stalled agent
   cannot block liveness; graceful shutdown publishes an `offline` flag and the
-  MQTT Last Will covers abrupt loss, so the master detects dropped slaves and
+  MQTT Last Will covers abrupt loss, so the manager detects dropped executors and
   expires their work.
-- Slave tree: each node reports its parent session id, so the master sees the
-  full slave tree and coordinates per-branch.
-- Coordination: the master plans work against conflict-risk zones (git
+- Executor tree: each node reports its parent session id, so the manager sees the
+  full executor tree and coordinates per-branch.
+- Coordination: the manager plans work against conflict-risk zones (git
   worktrees / path zones), serializes agents when conflicts are unavoidable,
   and learns from `report_conflict` feedback.
-- Watch: a slave can subscribe to a **master-produced event** (e.g.
+- Watch: an executor can subscribe to a **manager-produced event** (e.g.
   `zone_released` — "this zone got unlocked") with `mux_watch(kind,
-  filter)`. When the event fires, the master routes it to the watcher and the
-  watcher's wake channel (MCP notify / tmux) wakes the agent — so a slave can
+  filter)`. When the event fires, the manager routes it to the watcher and the
+  watcher's wake channel (MCP notify / tmux) wakes the agent — so an executor can
   wait for another node to release a scope instead of polling `zone_request`.
 - Wake channels (push): **MCP notify** is used whenever the agent declares it
   can receive server-pushed MCP notifications (always the highest priority);
@@ -50,13 +50,13 @@ docker compose up -d    # from the agent-mux dir (agent-mux/docker-compose.yml)
 Add to your Codex config (one entry per role; both point at the same binary):
 
 ```toml
-[mcp_servers.agent-mux-master]
+[mcp_servers.agent-mux-manager]
 command = "<repo>/agent-mux/target/release/agent-mux"
-args = ["--role", "master"]
+args = ["--role", "manager"]
 
-[mcp_servers.agent-mux-slave]
+[mcp_servers.agent-mux-executor]
 command = "<repo>/agent-mux/target/release/agent-mux"
-args = ["--role", "slave"]
+args = ["--role", "executor"]
 ```
 
 When a session id is available (`$CODEX_THREAD_ID`) the node auto-initializes
@@ -68,7 +68,7 @@ skill.
 ## Usage
 
 ```
-agent-mux [--role master|slave] [--session-id <sid>] [--config <dir>] [--root <topic-root>]
+agent-mux [--role manager|executor] [--session-id <sid>] [--config <dir>] [--root <topic-root>]
 
   --role        auto-init role (default: wait for the mux_init tool)
   --session-id  codex session id (default $CODEX_THREAD_ID)

@@ -2,7 +2,7 @@
 name = "agent-mux"
 version = "0.1.0"
 edition = "2024"
-description = "MQTT-based async RPC + liveness + coordination mesh for Codex agents (master/slave MCP server, single binary)"
+description = "MQTT-based async RPC + liveness + coordination mesh for Codex agents (manager/executor MCP server, single binary)"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "process", "signal"] }

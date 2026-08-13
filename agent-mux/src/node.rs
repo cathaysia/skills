@@ -1,4 +1,4 @@
-//! MQTT mesh node: one process == one node (master or slave).
+//! MQTT mesh node: one process == one node (manager or executor).
 //!
 //! Mirrors the Python reference (`mux_rpc.py`): registry/heartbeat
 //! topics, async RPC with a pending registry, control/ack, status, zone locks
@@ -64,27 +64,27 @@ pub struct State {
     pub rpc_requests: VecDeque<Value>,
     pub zones: HashMap<String, Value>,
     pub zone_snapshot: Value,
-    /// Master-held event subscriptions: watch_id -> {watch_id, watcher_sid,
-    /// kind, filter, ttl, created_at, expires_at}. Only the master stores these;
-    /// slaves just publish watch/reg and receive watch/evt/{sid}.
+    /// Manager-held event subscriptions: watch_id -> {watch_id, watcher_sid,
+    /// kind, filter, ttl, created_at, expires_at}. Only the manager stores these;
+    /// executors just publish watch/reg and receive watch/evt/{sid}.
     pub watches: HashMap<String, Value>,
-    /// Events the master routed back to this watcher (drained by mux_pull into
+    /// Events the manager routed back to this watcher (drained by mux_pull into
     /// the `watch` array).
     pub watch_events: VecDeque<Value>,
     pub status: Value,
     pub conflicts: HashMap<String, Value>,
-    /// Task table (master): task id -> task json (`id`, `kind`,
+    /// Task table (manager): task id -> task json (`id`, `kind`,
     /// `target_crates`, `files`, `owner`, `state`, `depends_on`,
     /// `created_at`, `updated_at`). Written by `assign` control messages and
-    /// updated from slaves' `report_status(task=...)`.
+    /// updated from executors' `report_status(task=...)`.
     pub tasks: HashMap<String, Value>,
-    /// Stable insertion order of task ids (master).
+    /// Stable insertion order of task ids (manager).
     pub task_order: Vec<String>,
-    /// Approval escalations awaiting the master agent's `approval_decide`
-    /// (master). Entries: `req_id`, `files`, `owner`, `level`, `reason`,
+    /// Approval escalations awaiting the manager agent's `approval_decide`
+    /// (manager). Entries: `req_id`, `files`, `owner`, `level`, `reason`,
     /// `reply_to`, `ts`.
     pub escalations: VecDeque<Value>,
-    /// Approval decision trace (master): auto-approvals and
+    /// Approval decision trace (manager): auto-approvals and
     /// `approval_decide` outcomes. Used for the digest trace and revocation.
     pub approvals: HashMap<String, Value>,
     /// High-water mark for `mux_digest`'s incremental `since` filter
@@ -95,12 +95,12 @@ pub struct State {
     pub connected: bool,
     pub subscribed: bool,
     pub shutting_down: bool,
-    pub master_sid: Option<String>,
+    pub manager_sid: Option<String>,
     pub last_state_change: f64,
 }
 
 impl State {
-    fn new(master_sid: Option<String>, config_dir: &str) -> Self {
+    fn new(manager_sid: Option<String>, config_dir: &str) -> Self {
         // Persisted coordination state (tasks / zones / conflicts / digest
         // high-water mark) is restored on restart so scheduling decisions and
         // the digest `since` increment survive a node restart.
@@ -128,7 +128,7 @@ impl State {
             connected: false,
             subscribed: false,
             shutting_down: false,
-            master_sid,
+            manager_sid,
             last_state_change: now_ts(),
         }
     }
@@ -184,7 +184,7 @@ impl Node {
         role: &str,
         sid: &str,
         parent_id: Option<String>,
-        master_sid: Option<String>,
+        manager_sid: Option<String>,
         root: &str,
         config_dir: &str,
         conf: &Config,
@@ -214,7 +214,7 @@ impl Node {
         opts.set_last_will(will);
         let (client, eventloop) = AsyncClient::new(opts, 100);
 
-        let state = State::new(master_sid, config_dir);
+        let state = State::new(manager_sid, config_dir);
         let node = Arc::new(Node {
             role: role.to_string(),
             sid: sid.to_string(),
@@ -233,7 +233,7 @@ impl Node {
             wake,
         });
         Self::spawn_event_loop_thread(node.clone(), eventloop);
-        if node.role == "slave" {
+        if node.role == "executor" {
             node.spawn_heartbeat();
         } else {
             node.spawn_sweep();
@@ -295,20 +295,20 @@ impl Node {
         self.parent_id.lock().unwrap().clone()
     }
 
-    /// Update role parameters (parent id / master sid) on an already-started
+    /// Update role parameters (parent id / manager sid) on an already-started
     /// node and re-announce so the retained registry carries the new parent.
     /// Used when `mux_init` matches the auto-initialized node instead of
     /// stopping/recreating it (which would clear retained hb/registry and make
-    /// the master see a spurious offline blip).
-    pub async fn reconfigure(self: &Arc<Node>, parent_id: Option<String>, master_sid: Option<String>) {
+    /// the manager see a spurious offline blip).
+    pub async fn reconfigure(self: &Arc<Node>, parent_id: Option<String>, manager_sid: Option<String>) {
         {
             let mut p = self.parent_id.lock().unwrap();
             *p = parent_id;
         }
         {
             let mut s = self.state.lock().await;
-            if let Some(m) = master_sid {
-                s.master_sid = Some(m);
+            if let Some(m) = manager_sid {
+                s.manager_sid = Some(m);
             }
         }
         self.announce().await;
@@ -323,7 +323,7 @@ impl Node {
             "root": self.root,
             "config_dir": self.config_dir,
             "broker": format!("{}:{}", self.conf.host, self.conf.port),
-            "master_session_id": s.master_sid,
+            "manager_session_id": s.manager_sid,
             "connected": s.connected,
             "status": s.status,
             "wake": self.wake.as_ref().map(|w| w.name()).unwrap_or("none"),
@@ -442,7 +442,7 @@ impl Node {
                             info["offline_reason"] = json!("heartbeat_timeout");
                         }
                         let ev = json!({
-                            "kind": "slave_left",
+                            "kind": "executor_left",
                             "session_id": sid,
                             "reason": "heartbeat_timeout"
                         });
@@ -452,7 +452,7 @@ impl Node {
                         Node::push_event(&mut s, ev);
                         left.push((sid.clone(), "heartbeat_timeout".to_string()));
                     }
-                    // Master cleanup: drop watches of gone slaves and expire
+                    // Manager cleanup: drop watches of gone executors and expire
                     // watches whose ttl has passed.
                     if !offline.is_empty() {
                         s.watches.retain(|_, w| {
@@ -555,7 +555,7 @@ impl Node {
             s.last_state_change = now_ts();
         }
         if let Some(client) = &self.client {
-            if self.role == "master" {
+            if self.role == "manager" {
                 let t = self.topic(&["#"]);
                 if let Err(e) = client.subscribe(t.clone(), qos(self.conf.qos)).await {
                     eprintln!("agent-mux: subscribe {t} failed: {e}");
@@ -565,7 +565,7 @@ impl Node {
                     self.topic(&["ctrl", self.sid.as_str()]),
                     self.topic(&["rpc", "req", self.sid.as_str()]),
                     self.topic(&["rpc", "resp", self.sid.as_str()]),
-                    self.topic(&["master"]),
+                    self.topic(&["manager"]),
                     self.topic(&["zones"]),
                     self.topic(&["watch", "evt", self.sid.as_str()]),
                 ];
@@ -588,10 +588,10 @@ impl Node {
             true,
         )
         .await;
-        if self.role == "master" {
+        if self.role == "manager" {
             self.publish(
-                &self.topic(&["master"]),
-                Some(json!({"sid": self.sid, "role": "master", "ts": now})),
+                &self.topic(&["manager"]),
+                Some(json!({"sid": self.sid, "role": "manager", "ts": now})),
                 true,
             )
             .await;
@@ -652,7 +652,7 @@ impl Node {
                 "conflict" => self.on_conflict(rel[1], &data).await,
                 "watch" if rel[1] == "reg" => self.on_watch_reg(&data).await,
                 "ctrl" if rel[1] == self.sid => self.on_ctrl(&data).await,
-                "ctrl_ack" if self.role == "master" => self.on_ctrl_ack(rel[1], &data).await,
+                "ctrl_ack" if self.role == "manager" => self.on_ctrl_ack(rel[1], &data).await,
                 _ => {}
             }
         } else if rel.len() == 3 {
@@ -667,10 +667,10 @@ impl Node {
             }
         } else if rel.len() == 1 {
             match rel[0] {
-                "master" => {
+                "manager" => {
                     if let Some(sid) = data.get("sid").and_then(|v| v.as_str()) {
                         if sid != self.sid {
-                            self.state.lock().await.master_sid = Some(sid.to_string());
+                            self.state.lock().await.manager_sid = Some(sid.to_string());
                         }
                     }
                 }
@@ -680,13 +680,13 @@ impl Node {
                         .and_then(|v| v.as_object())
                         .cloned();
                     self.state.lock().await.zone_snapshot = data.clone();
-                    if self.role == "master" {
-                        // Master is authoritative for zone ownership and never
+                    if self.role == "manager" {
+                        // Manager is authoritative for zone ownership and never
                         // adopts owners from the bus: a stale retained echo (e.g.
                         // from a previous run) must not block a fresh acquire.
                         // It only merges queued waiters into zones it already
                         // manages, so a release can hand the zone to the next
-                        // slave that queued behind it.
+                        // executor that queued behind it.
                         if let Some(bus) = bus_zones {
                             let mut s = self.state.lock().await;
                             for (k, v) in bus {
@@ -745,7 +745,7 @@ impl Node {
     }
 
     async fn on_registry(self: &Arc<Node>, sid: &str, data: &Value, empty: bool) {
-        if sid == self.sid || self.role != "master" {
+        if sid == self.sid || self.role != "manager" {
             return;
         }
         let mut s = self.state.lock().await;
@@ -772,7 +772,7 @@ impl Node {
         let parent = info.get("parent_id").cloned().unwrap_or(Value::Null);
         s.registry.insert(sid.to_string(), info.clone());
         if new && online {
-            let ev = json!({"kind": "slave_joined", "session_id": sid, "parent_id": parent, "info": info});
+            let ev = json!({"kind": "executor_joined", "session_id": sid, "parent_id": parent, "info": info});
             let wake_up = self.wake_for(&s, &ev);
             Self::push_event(&mut s, ev);
             let wake = self.wake.clone();
@@ -787,16 +787,16 @@ impl Node {
         }
     }
 
-    /// Liveness: the single source of truth for slave presence.
+    /// Liveness: the single source of truth for executor presence.
     ///
-    /// A non-empty online payload refreshes the slave's registry entry. An
+    /// A non-empty online payload refreshes the executor's registry entry. An
     /// empty payload (retained hb cleared) or `status == "offline"` (graceful
-    /// shutdown flag or LWT after abrupt loss) marks the slave offline
+    /// shutdown flag or LWT after abrupt loss) marks the executor offline
     /// immediately and clears the retained registry entry. The offline ts
     /// comes from the payload (not now) so a stale tombstone cannot refresh
     /// last_seen for a node that is actually gone.
     async fn on_hb(self: &Arc<Node>, sid: &str, data: &Value, empty: bool) {
-        if sid == self.sid || self.role != "master" {
+        if sid == self.sid || self.role != "manager" {
             return;
         }
         let offline = empty || data.get("status").and_then(|v| v.as_str()) == Some("offline");
@@ -812,7 +812,7 @@ impl Node {
             info["status"] = json!("offline");
             info["offline_reason"] = json!(reason);
             info["last_seen"] = json!(ts);
-            let ev = json!({"kind": "slave_left", "session_id": sid, "reason": reason});
+            let ev = json!({"kind": "executor_left", "session_id": sid, "reason": reason});
             let wake_up = self.wake_for(&s, &ev);
             Self::push_event(&mut s, ev);
             s.watches.retain(|_, w| {
@@ -850,7 +850,7 @@ impl Node {
             let mut s = self.state.lock().await;
             let info = s.registry.get(sid).cloned().unwrap_or_else(|| json!({"sid": sid}));
             let parent = info.get("parent_id").cloned().unwrap_or(Value::Null);
-            let ev = json!({"kind": "slave_joined", "session_id": sid, "parent_id": parent, "info": info});
+            let ev = json!({"kind": "executor_joined", "session_id": sid, "parent_id": parent, "info": info});
             let wake_up = self.wake_for(&s, &ev);
             Self::push_event(&mut s, ev);
             let wake = self.wake.clone();
@@ -865,7 +865,7 @@ impl Node {
     }
 
     async fn on_status(self: &Arc<Node>, sid: &str, data: &Value) {
-        if sid == self.sid || self.role != "master" {
+        if sid == self.sid || self.role != "manager" {
             return;
         }
         let mut wake_up = !self.conf.digest_mode;
@@ -903,28 +903,46 @@ impl Node {
             // reported state drives the task state machine (working -> Working,
             // done -> Done, error/failed -> Failed); blocked/conflict stay
             // Working because the owner is still on the task, just waiting.
+            // Only the task's own owner may move its state via status, and
+            // terminal states (Done/Failed) are final: a status never regresses
+            // them — the agent's explicit override is `task_force`.
             if let Some(tid) = data.get("task_id").and_then(|v| v.as_str()) {
-                if let Some(task) = s.tasks.get_mut(tid) {
-                    let new_state = task_state_from_status(
-                        data.get("state").and_then(|v| v.as_str()).unwrap_or(""),
-                    );
-                    let old_state = task.get("state").and_then(|v| v.as_str()).unwrap_or("");
-                    if new_state != old_state {
-                        task["state"] = json!(new_state);
-                        task["updated_at"] = json!(now_ts());
-                        let tev = json!({
-                            "kind": "task",
-                            "task_id": tid,
-                            "state": new_state,
-                            "owner": sid,
-                            "ts": now_ts(),
-                        });
-                        if self.wake_for(&s, &tev) {
-                            wake_up = true;
-                        }
-                        Self::push_event(&mut s, tev);
-                        task_changed = true;
+                let old_state = s
+                    .tasks
+                    .get(tid)
+                    .and_then(|t| t.get("state"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let owner = s
+                    .tasks
+                    .get(tid)
+                    .and_then(|t| t.get("owner"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let new_state = task_state_from_status(
+                    data.get("state").and_then(|v| v.as_str()).unwrap_or(""),
+                );
+                if owner == sid
+                    && new_state != old_state
+                    && !matches!(old_state.as_str(), "Done" | "Failed")
+                    && let Some(task) = s.tasks.get_mut(tid)
+                {
+                    task["state"] = json!(new_state);
+                    task["updated_at"] = json!(now_ts());
+                    let tev = json!({
+                        "kind": "task",
+                        "task_id": tid,
+                        "state": new_state,
+                        "owner": sid,
+                        "ts": now_ts(),
+                    });
+                    if self.wake_for(&s, &tev) {
+                        wake_up = true;
                     }
+                    Self::push_event(&mut s, tev);
+                    task_changed = true;
                 }
                 // A2: recompute readiness (promote Scheduled tasks whose deps
                 // cleared / global slot freed) and auto-release their owners.
@@ -954,7 +972,7 @@ impl Node {
         self.ctrl_notify.notify_one();
         let ack_target = {
             let s = self.state.lock().await;
-            s.master_sid.clone().or_else(|| {
+            s.manager_sid.clone().or_else(|| {
                 data.get("from").and_then(|v| v.as_str()).map(|x| x.to_string())
             })
         };
@@ -1018,12 +1036,12 @@ impl Node {
             }
             return;
         }
-        // Zone ownership is master-decided: a slave asks via the `zone_request`
-        // RPC and the master node answers against its authoritative zone
+        // Zone ownership is manager-decided: an executor asks via the `zone_request`
+        // RPC and the manager node answers against its authoritative zone
         // registry (grant when free / FIFO queue when held / release when the
         // requester owns it). It is a mechanical lock decision, so it is not
-        // queued for the master agent — the master's registry is the decider.
-        if self.role == "master" && method == "zone_request" {
+        // queued for the manager agent — the manager's registry is the decider.
+        if self.role == "manager" && method == "zone_request" {
             let params = data.get("params").cloned().unwrap_or(Value::Null);
             let path = params
                 .get("path")
@@ -1045,12 +1063,12 @@ impl Node {
             }
             return;
         }
-        // A3: `may_i_touch` is a mechanical five-level impact check. The master
+        // A3: `may_i_touch` is a mechanical five-level impact check. The manager
         // node auto-answers the risk-free cases (never-touched + no zone +
         // no conflict history, or same-owner repeat) and escalates everything
-        // risky into the approval queue for the master agent, which arbitrates
+        // risky into the approval queue for the manager agent, which arbitrates
         // with `approval_decide`. Escalated requests are NOT answered here.
-        if self.role == "master" && method == "may_i_touch" {
+        if self.role == "manager" && method == "may_i_touch" {
             let params = data.get("params").cloned().unwrap_or(Value::Null);
             let files: Vec<String> = params
                 .get("files")
@@ -1416,9 +1434,9 @@ impl Node {
     }
 
     /// Publish a status report (the only 4-state discipline: `blocked` /
-    /// `conflict` / `done` / `error` — no ticks, no echoes). Slaves attach the
+    /// `conflict` / `done` / `error` — no ticks, no echoes). Executors attach the
     /// optional task identity (`task_id`, `task_kind`) and their declared write
-    /// set (`target_crates`, `files`) so the master's task table and the
+    /// set (`target_crates`, `files`) so the manager's task table and the
     /// `may_i_touch` impact check have real data.
     #[allow(clippy::too_many_arguments)] // status carries optional task identity + declared write set
     pub async fn report_status(
@@ -1532,12 +1550,12 @@ impl Node {
         }
     }
 
-    /// A2: `task_cancel` (master only). Remove the task from the table and
+    /// A2: `task_cancel` (manager only). Remove the task from the table and
     /// recompute readiness — a cancelled dependency may unblock a queued
     /// Validate, which is then auto-released.
     pub async fn task_cancel(&self, task_id: &str) -> Value {
-        if self.role != "master" {
-            return json!({"ok": false, "error": "task_cancel is master-only"});
+        if self.role != "manager" {
+            return json!({"ok": false, "error": "task_cancel is manager-only"});
         }
         let releases = {
             let mut s = self.state.lock().await;
@@ -1553,12 +1571,12 @@ impl Node {
         json!({"ok": true, "task_id": task_id, "cancelled": true})
     }
 
-    /// A2: `task_force` (master only) — the agent's explicit override of the
+    /// A2: `task_force` (manager only) — the agent's explicit override of the
     /// dependency graph. Sets the task state directly, then recomputes
     /// readiness (so forcing a dependency to `Done` releases its Validate).
     pub async fn task_force(&self, task_id: &str, state: &str) -> Value {
-        if self.role != "master" {
-            return json!({"ok": false, "error": "task_force is master-only"});
+        if self.role != "manager" {
+            return json!({"ok": false, "error": "task_force is manager-only"});
         }
         if !TASK_STATES.contains(&state) {
             return json!({"ok": false, "error": format!(
@@ -1585,7 +1603,7 @@ impl Node {
         json!({"ok": true, "task_id": task_id, "state": state, "forced": true})
     }
 
-    /// A2: `assign` control (master only). Creates a task from the payload —
+    /// A2: `assign` control (manager only). Creates a task from the payload —
     /// which must carry `kind`, `target_crates` and `files` (missing any is
     /// an error). Dependencies are computed at assign time
     /// (`compute_depends_on`); the task starts `Ready` when it has no
@@ -1593,8 +1611,8 @@ impl Node {
     /// `recompute_tasks` then auto-releases Validate tasks whose deps cleared
     /// — the agent is never asked to babysit readiness.
     pub async fn assign_task(&self, target: &str, payload: Value) -> Result<Value, String> {
-        if self.role != "master" {
-            return Err("assign_task is master-only".to_string());
+        if self.role != "manager" {
+            return Err("assign_task is manager-only".to_string());
         }
         let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let target_crates = payload.get("target_crates").cloned();
@@ -1658,13 +1676,13 @@ impl Node {
 
     // ---- A3: approval arbitration ----
 
-    /// A3: `approval_decide` (master only). The master agent answers an
+    /// A3: `approval_decide` (manager only). The manager agent answers an
     /// escalated `may_i_touch` request: `approve` / `deny` answer the
     /// requester via the stored `reply_to` and record a trace in
     /// `s.approvals`; `queue` keeps the escalation pending without answering.
     pub async fn approval_decide(&self, req_id: &str, decision: &str) -> Value {
-        if self.role != "master" {
-            return json!({"ok": false, "error": "approval_decide is master-only"});
+        if self.role != "manager" {
+            return json!({"ok": false, "error": "approval_decide is manager-only"});
         }
         if !matches!(decision, "approve" | "deny" | "queue") {
             return json!({"ok": false, "error": "decision must be approve|deny|queue"});
@@ -1723,13 +1741,13 @@ impl Node {
     // ---- zones ----
 
     pub async fn zone_acquire(&self, path: &str, owner: Option<String>, force: bool) -> Value {
-        // Zone ownership is decided by the master only. A slave must not lock a
-        // zone itself, and must not declare an owner; it asks the master with
+        // Zone ownership is decided by the manager only. An executor must not lock a
+        // zone itself, and must not declare an owner; it asks the manager with
         // `zone_request` instead.
-        if self.role != "master" {
+        if self.role != "manager" {
             return json!({
                 "ok": false,
-                "error": "zone_acquire is master-only: zone ownership is decided by the master; use zone_request to ask"
+                "error": "zone_acquire is manager-only: zone ownership is decided by the manager; use zone_request to ask"
             });
         }
         let owner = owner.unwrap_or_else(|| self.sid.clone());
@@ -1759,12 +1777,12 @@ impl Node {
     }
 
     pub async fn zone_release(&self, path: &str, owner: Option<String>) -> Value {
-        // Releasing is also master-only: a slave relinquishes a zone through
-        // `zone_request(path, release=true)` so the master stays authoritative.
-        if self.role != "master" {
+        // Releasing is also manager-only: an executor relinquishes a zone through
+        // `zone_request(path, release=true)` so the manager stays authoritative.
+        if self.role != "manager" {
             return json!({
                 "ok": false,
-                "error": "zone_release is master-only: ask the master with zone_request(path, release=true)"
+                "error": "zone_release is manager-only: ask the manager with zone_request(path, release=true)"
             });
         }
         let mut next_owner: Option<String> = None;
@@ -1789,7 +1807,7 @@ impl Node {
             }
         }
         self.publish_zones().await;
-        // Master-produced event: a zone got unlocked (possibly handed to the
+        // Manager-produced event: a zone got unlocked (possibly handed to the
         // next queued owner). Early returns above already bailed on failure,
         // so reaching here means the release succeeded. Watchers are matched
         // and routed to {root}/watch/evt/{watcher_sid} below.
@@ -1802,12 +1820,12 @@ impl Node {
         json!({"ok": true, "path": path, "next_owner": next_owner})
     }
 
-    /// A4: `zone_steal` (master only). Force zone ownership to the master
+    /// A4: `zone_steal` (manager only). Force zone ownership to the manager
     /// session id, breaking any deadlock. Publishes the authoritative registry
     /// and notifies watchers; used to arbitrate a stuck zone.
     pub async fn zone_steal(&self, path: &str) -> Value {
-        if self.role != "master" {
-            return json!({"ok": false, "error": "zone_steal is master-only"});
+        if self.role != "manager" {
+            return json!({"ok": false, "error": "zone_steal is manager-only"});
         }
         {
             let mut s = self.state.lock().await;
@@ -1830,26 +1848,26 @@ impl Node {
         json!({"ok": true, "path": path, "owner": self.sid, "stolen": true})
     }
 
-    /// Slave: ask the master for zone ownership. The master's registry decides:
+    /// Executor: ask the manager for zone ownership. The manager's registry decides:
     /// it grants the zone when free, FIFO-queues this node behind the current
     /// owner, or (when `release` is true) releases the zone to the next queued
     /// owner if this node currently owns it. Returns the async RPC request id;
     /// await the outcome with `await_result` / `get_result`.
     pub async fn zone_request(&self, path: &str, release: bool) -> Result<Value, String> {
-        let master = {
+        let manager = {
             let s = self.state.lock().await;
-            s.master_sid.clone()
+            s.manager_sid.clone()
         }
-        .ok_or_else(|| "zone_request: no master session id known yet".to_string())?;
-        if master == self.sid {
+        .ok_or_else(|| "zone_request: no manager session id known yet".to_string())?;
+        if manager == self.sid {
             return Err(
-                "zone_request is for slaves; as the master use zone_acquire / zone_release directly"
+                "zone_request is for executors; as the manager use zone_acquire / zone_release directly"
                     .to_string(),
             );
         }
         let rid = self
             .send_rpc(
-                &master,
+                &manager,
                 "zone_request",
                 Some(json!({"path": path, "release": release})),
                 None,
@@ -1859,7 +1877,7 @@ impl Node {
         Ok(json!({
             "ok": true,
             "request_id": rid,
-            "target": master,
+            "target": manager,
             "path": path,
             "release": release,
         }))
@@ -1867,8 +1885,8 @@ impl Node {
 
     // ---- watch (event subscription) ----
 
-    /// Register a watch for a master-produced event (slave side). Publishes
-    /// `{root}/watch/reg`; the master stores it and routes matching events to
+    /// Register a watch for a manager-produced event (executor side). Publishes
+    /// `{root}/watch/reg`; the manager stores it and routes matching events to
     /// `{root}/watch/evt/{watcher_sid}`. Returns the generated `watch_id`.
     pub async fn watch_register(&self, kind: &str, filter: Option<Value>, ttl: Option<f64>) -> Value {
         let watch_id = uuid::Uuid::new_v4().simple().to_string();
@@ -1894,8 +1912,8 @@ impl Node {
         })
     }
 
-    /// Cancel a previously registered watch (slave side). Publishes
-    /// `{root}/watch/reg` with `cancel: true`; the master removes the watch.
+    /// Cancel a previously registered watch (executor side). Publishes
+    /// `{root}/watch/reg` with `cancel: true`; the manager removes the watch.
     pub async fn watch_cancel(&self, watch_id: &str) -> Value {
         self.publish(
             &self.topic(&["watch", "reg"]),
@@ -1911,9 +1929,9 @@ impl Node {
         json!({"ok": true, "watch_id": watch_id, "canceled": true})
     }
 
-    /// Master: register or cancel a watch from `{root}/watch/reg`.
+    /// Manager: register or cancel a watch from `{root}/watch/reg`.
     async fn on_watch_reg(self: &Arc<Node>, data: &Value) {
-        if self.role != "master" {
+        if self.role != "manager" {
             return;
         }
         let watch_id = data.get("watch_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1946,11 +1964,11 @@ impl Node {
         );
     }
 
-    /// Slave: a matched watch event arrived on `{root}/watch/evt/{sid}`. Queue
+    /// Executor: a matched watch event arrived on `{root}/watch/evt/{sid}`. Queue
     /// it (mux_pull returns it under `watch`) and wake the agent so it stops
     /// polling.
     async fn on_watch_evt(self: &Arc<Node>, data: &Value) {
-        if self.role != "slave" {
+        if self.role != "executor" {
             return;
         }
         {
@@ -1961,7 +1979,7 @@ impl Node {
         self.wake();
     }
 
-    /// Master: match a produced event against stored watches and publish each
+    /// Manager: match a produced event against stored watches and publish each
     /// match to `{root}/watch/evt/{watcher_sid}`. Expired watches are dropped.
     async fn emit_watch_events(&self, kind: &str, event: Value) {
         let mut notify: Vec<(String, Value)> = Vec::new();
@@ -2077,7 +2095,7 @@ impl Node {
     }
 
     async fn on_conflict(self: &Arc<Node>, sid: &str, data: &Value) {
-        if self.role != "master" {
+        if self.role != "manager" {
             return;
         }
         let has_content = data.get("id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
@@ -2228,7 +2246,7 @@ impl Node {
     /// Graceful shutdown: publish the hb offline flag and clear the retained
     /// registry, then disconnect and abort tasks. `clear_retained` is false
     /// when a live node with the same session id is replacing us (publishing
-    /// offline would make the master see a spurious offline blip for a
+    /// offline would make the manager see a spurious offline blip for a
     /// still-online node).
     pub async fn stop_with(self: &Arc<Node>, clear_retained: bool) {
         {
@@ -2241,7 +2259,7 @@ impl Node {
         if let Some(client) = &self.client {
             if clear_retained {
                 // Graceful leave: publish the offline flag on the retained hb
-                // topic so the master sees `slave_left` immediately instead of
+                // topic so the manager sees `executor_left` immediately instead of
                 // waiting for hb_timeout. Abrupt loss is covered by the LWT.
                 let t = self.topic(&["hb", self.sid.as_str()]);
                 let payload = json!({"sid": self.sid, "status": "offline",
@@ -2417,7 +2435,7 @@ enum EventClass {
 }
 
 /// Classify a queued event. `s` is needed for context (e.g. whether a
-/// departing slave still owns unfinished tasks).
+/// departing executor still owns unfinished tasks).
 fn classify_event(s: &State, ev: &Value) -> EventClass {
     let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     match kind {
@@ -2431,10 +2449,10 @@ fn classify_event(s: &State, ev: &Value) -> EventClass {
             Some("Done") | Some("Failed") => EventClass::Action,
             _ => EventClass::Noise,
         },
-        // A slave leaving is only actionable when it still has unfinished work.
-        "slave_left" => {
+        // An executor leaving is only actionable when it still has unfinished work.
+        "executor_left" => {
             let sid = ev.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
-            if slave_has_unfinished_tasks(s, sid) {
+            if executor_has_unfinished_tasks(s, sid) {
                 EventClass::Action
             } else {
                 EventClass::Noise
@@ -2452,7 +2470,7 @@ fn classify_event(s: &State, ev: &Value) -> EventClass {
                 _ => EventClass::Noise,
             }
         }
-        // ctrl_ack echoes, slave_joined and auto-approval traces are noise.
+        // ctrl_ack echoes, executor_joined and auto-approval traces are noise.
         _ => EventClass::Noise,
     }
 }
@@ -2523,7 +2541,7 @@ fn action_rank(ev: &Value) -> u8 {
 }
 
 /// Does `sid` own any task that is not finished (not Done/Failed)?
-fn slave_has_unfinished_tasks(s: &State, sid: &str) -> bool {
+fn executor_has_unfinished_tasks(s: &State, sid: &str) -> bool {
     s.tasks.values().any(|t| {
         t.get("owner").and_then(|v| v.as_str()) == Some(sid)
             && !matches!(
@@ -2597,8 +2615,10 @@ fn task_touches_global(task: &Value) -> bool {
         .any(is_global_shared_path)
 }
 
-/// Global shared state is serial: at most one such task may be Working/Assigned
-/// mesh-wide; the rest queue in Scheduled.
+/// Global shared state is serial: at most one such task may be
+/// Ready/Working/Assigned mesh-wide; the rest queue in Scheduled until the
+/// slot frees (a second global task is never even made Ready while the first
+/// is still active).
 fn global_serial_free(s: &State, task: &Value) -> bool {
     if !task_touches_global(task) {
         return true;
@@ -2609,7 +2629,7 @@ fn global_serial_free(s: &State, task: &Value) -> bool {
             || !task_touches_global(t)
             || !matches!(
                 t.get("state").and_then(|v| v.as_str()),
-                Some("Working") | Some("Assigned")
+                Some("Ready") | Some("Working") | Some("Assigned")
             )
     })
 }
@@ -2636,7 +2656,7 @@ fn is_global_shared_path(path: &str) -> bool {
         .any(|c| matches!(*c, "target" | "build" | "dist" | "generated" | "node_modules"))
 }
 
-/// Map a slave-reported status state onto a task state. `blocked` /
+/// Map an executor-reported status state onto a task state. `blocked` /
 /// `conflict` stay `Working`: the owner is still on the task, just waiting —
 /// only a hard error/failure moves the task to `Failed`.
 fn task_state_from_status(status: &str) -> &'static str {
@@ -2745,7 +2765,7 @@ enum MayIResult {
 
 /// Five-level impact check (order 1 -> 5). Auto-approval is limited to
 /// never-touched files with no zone claim and no conflict history, or a
-/// same-owner repeat. Everything risky escalates to the master agent via
+/// same-owner repeat. Everything risky escalates to the manager agent via
 /// `approval_decide`.
 fn check_may_i_touch(s: &State, files: &[String], owner: &str) -> MayIResult {
     if files.is_empty() {
@@ -2942,7 +2962,7 @@ fn build_tree(reg: &HashMap<String, Value>, root_sid: &str, sid: &str) -> Value 
                 if *k == sid {
                     return false;
                 }
-                if e.get("role").and_then(|r| r.as_str()) == Some("master") {
+                if e.get("role").and_then(|r| r.as_str()) == Some("manager") {
                     return false;
                 }
                 match e.get("parent_id").and_then(|p| p.as_str()) {
@@ -2983,12 +3003,12 @@ mod zone_lock_tests {
         c
     }
 
-    async fn spawn(role: &str, sid: &str, root: &str, master_sid: Option<String>) -> Arc<Node> {
+    async fn spawn(role: &str, sid: &str, root: &str, manager_sid: Option<String>) -> Arc<Node> {
         Node::start(
             role,
             sid,
             None,
-            master_sid,
+            manager_sid,
             root,
             "/tmp/agent-mux-test",
             &test_config(),
@@ -2998,28 +3018,28 @@ mod zone_lock_tests {
         .expect("node start")
     }
 
-    /// Zone ownership is master-only: slaves cannot lock zones themselves and
-    /// must ask via the `zone_request` RPC, which the master node answers
+    /// Zone ownership is manager-only: executors cannot lock zones themselves and
+    /// must ask via the `zone_request` RPC, which the manager node answers
     /// against its authoritative registry (grant / FIFO queue / release).
     #[tokio::test]
     #[ignore = "requires a running MQTT broker on 127.0.0.1:1883"]
-    async fn zone_ownership_is_master_only() {
+    async fn zone_ownership_is_manager_only() {
         // All three nodes share one topic root so they form a single mesh.
         // Topic roots must be a single path segment (on_message matches
         // parts[0] == root), so use a flat uuid root for the test mesh.
         let root = format!("ztest{}", uuid::Uuid::new_v4().simple());
-        let master = spawn("master", "test-master", &root, None).await;
-        let slave_a = spawn("slave", "test-slave-a", &root, Some(master.sid.clone())).await;
-        let slave_b = spawn("slave", "test-slave-b", &root, Some(master.sid.clone())).await;
+        let manager = spawn("manager", "test-manager", &root, None).await;
+        let executor_a = spawn("executor", "test-executor-a", &root, Some(manager.sid.clone())).await;
+        let executor_b = spawn("executor", "test-executor-b", &root, Some(manager.sid.clone())).await;
 
-        // Slaves cannot lock zones directly.
-        let denied = slave_a.zone_acquire("/z", None, false).await;
-        assert_eq!(denied["ok"], false, "slave zone_acquire must be rejected: {denied}");
-        let denied_release = slave_a.zone_release("/z", None).await;
-        assert_eq!(denied_release["ok"], false, "slave zone_release must be rejected");
+        // Executors cannot lock zones directly.
+        let denied = executor_a.zone_acquire("/z", None, false).await;
+        assert_eq!(denied["ok"], false, "executor zone_acquire must be rejected: {denied}");
+        let denied_release = executor_a.zone_release("/z", None).await;
+        assert_eq!(denied_release["ok"], false, "executor zone_release must be rejected");
 
-        // Slave A requests ownership -> master grants it.
-        let rid = slave_a
+        // Executor A requests ownership -> manager grants it.
+        let rid = executor_a
             .zone_request("/z", false)
             .await
             .expect("zone_request")
@@ -3027,14 +3047,14 @@ mod zone_lock_tests {
             .and_then(|v| v.as_str())
             .unwrap()
             .to_string();
-        let res = slave_a.await_result(&rid, Some(10.0)).await;
+        let res = executor_a.await_result(&rid, Some(10.0)).await;
         assert_eq!(res["status"], "done", "request must complete: {res}");
         let result = res["result"].clone();
         assert_eq!(result["ok"], true, "grant should succeed: {result}");
-        assert_eq!(result["owner"], "test-slave-a");
+        assert_eq!(result["owner"], "test-executor-a");
 
-        // Slave B requests while A holds -> FIFO-queued.
-        let rid2 = slave_b
+        // Executor B requests while A holds -> FIFO-queued.
+        let rid2 = executor_b
             .zone_request("/z", false)
             .await
             .expect("zone_request")
@@ -3042,12 +3062,12 @@ mod zone_lock_tests {
             .and_then(|v| v.as_str())
             .unwrap()
             .to_string();
-        let res2 = slave_b.await_result(&rid2, Some(10.0)).await;
+        let res2 = executor_b.await_result(&rid2, Some(10.0)).await;
         assert_eq!(res2["result"]["ok"], false, "held zone must queue: {res2}");
         assert_eq!(res2["result"]["queued"], true);
 
         // A releases -> handed to the next queued owner (B).
-        let rid3 = slave_a
+        let rid3 = executor_a
             .zone_request("/z", true)
             .await
             .expect("zone_request")
@@ -3055,24 +3075,24 @@ mod zone_lock_tests {
             .and_then(|v| v.as_str())
             .unwrap()
             .to_string();
-        let res3 = slave_a.await_result(&rid3, Some(10.0)).await;
+        let res3 = executor_a.await_result(&rid3, Some(10.0)).await;
         assert_eq!(res3["result"]["ok"], true, "release should succeed: {res3}");
-        assert_eq!(res3["result"]["next_owner"], "test-slave-b");
+        assert_eq!(res3["result"]["next_owner"], "test-executor-b");
 
-        // The master's registry is the source of truth: B now owns /z.
-        let zones = master.list_zones().await;
-        assert_eq!(zones["zones"]["/z"]["owner"], "test-slave-b", "{zones}");
+        // The manager's registry is the source of truth: B now owns /z.
+        let zones = manager.list_zones().await;
+        assert_eq!(zones["zones"]["/z"]["owner"], "test-executor-b", "{zones}");
 
-        // The master can still assign a zone to a slave manually.
-        let assigned = master
-            .zone_acquire("/m", Some("test-slave-a".to_string()), false)
+        // The manager can still assign a zone to an executor manually.
+        let assigned = manager
+            .zone_acquire("/m", Some("test-executor-a".to_string()), false)
             .await;
-        assert_eq!(assigned["ok"], true, "master assign should succeed: {assigned}");
-        assert_eq!(assigned["owner"], "test-slave-a");
+        assert_eq!(assigned["ok"], true, "manager assign should succeed: {assigned}");
+        assert_eq!(assigned["owner"], "test-executor-a");
 
-        master.stop().await;
-        slave_a.stop().await;
-        slave_b.stop().await;
+        manager.stop().await;
+        executor_a.stop().await;
+        executor_b.stop().await;
     }
 }
 
@@ -3099,7 +3119,7 @@ mod coordination_tests {
         State::new(None, temp_dir("state").to_str().unwrap())
     }
 
-    fn bare_node_at(role: &str, sid: &str, master: Option<&str>, config_dir: &str) -> Node {
+    fn bare_node_at(role: &str, sid: &str, manager: Option<&str>, config_dir: &str) -> Node {
         Node {
             role: role.to_string(),
             sid: sid.to_string(),
@@ -3108,7 +3128,7 @@ mod coordination_tests {
             config_dir: config_dir.to_string(),
             conf: Config::default(),
             state: Arc::new(Mutex::new(State::new(
-                master.map(|m| m.to_string()),
+                manager.map(|m| m.to_string()),
                 config_dir,
             ))),
             ctrl_notify: Arc::new(Notify::new()),
@@ -3122,8 +3142,8 @@ mod coordination_tests {
         }
     }
 
-    fn bare_node(role: &str, sid: &str, master: Option<&str>) -> Node {
-        bare_node_at(role, sid, master, temp_dir("node").to_str().unwrap())
+    fn bare_node(role: &str, sid: &str, manager: Option<&str>) -> Node {
+        bare_node_at(role, sid, manager, temp_dir("node").to_str().unwrap())
     }
 
     #[allow(clippy::too_many_arguments)] // test helper: task table fixture
@@ -3180,8 +3200,8 @@ mod coordination_tests {
         assert_eq!(noise_kind(&json!({"kind": "task"})), Some("tick"));
         assert_eq!(classify_event(&s, &json!({"kind": "task", "state": "Done"})), EventClass::Action);
         assert_eq!(classify_event(&s, &json!({"kind": "task", "state": "Failed"})), EventClass::Action);
-        // slave_joined is noise.
-        assert_eq!(classify_event(&s, &json!({"kind": "slave_joined"})), EventClass::Noise);
+        // executor_joined is noise.
+        assert_eq!(classify_event(&s, &json!({"kind": "executor_joined"})), EventClass::Noise);
 
         // Decision-worthy events are actions.
         for kind in [
@@ -3205,23 +3225,23 @@ mod coordination_tests {
     }
 
     #[test]
-    fn slave_left_action_only_with_unfinished_tasks() {
+    fn executor_left_action_only_with_unfinished_tasks() {
         let mut s = state();
         add_task(&mut s, "t1", "Src", &["crate-x"], &["src/a.rs"], "worker", "Working", &[]);
-        // A departing slave that still owns an unfinished task is actionable.
+        // A departing executor that still owns an unfinished task is actionable.
         assert_eq!(
-            classify_event(&s, &json!({"kind": "slave_left", "session_id": "worker"})),
+            classify_event(&s, &json!({"kind": "executor_left", "session_id": "worker"})),
             EventClass::Action
         );
-        // An idle slave leaving is noise.
+        // An idle executor leaving is noise.
         assert_eq!(
-            classify_event(&s, &json!({"kind": "slave_left", "session_id": "idle"})),
+            classify_event(&s, &json!({"kind": "executor_left", "session_id": "idle"})),
             EventClass::Noise
         );
-        // Once the task is done, the same slave leaving is noise again.
+        // Once the task is done, the same executor leaving is noise again.
         s.tasks.get_mut("t1").unwrap()["state"] = json!("Done");
         assert_eq!(
-            classify_event(&s, &json!({"kind": "slave_left", "session_id": "worker"})),
+            classify_event(&s, &json!({"kind": "executor_left", "session_id": "worker"})),
             EventClass::Noise
         );
     }
@@ -3238,7 +3258,7 @@ mod coordination_tests {
 
     #[tokio::test]
     async fn digest_counts_noise_and_returns_decision_first_actions() {
-        let node = bare_node("master", "m", None);
+        let node = bare_node("manager", "m", None);
         {
             let mut s = node.state.lock().await;
             Node::push_event(&mut s, json!({"kind": "ctrl_ack", "session_id": "a", "ts": 1.0}));
@@ -3370,22 +3390,22 @@ mod coordination_tests {
 
     #[tokio::test]
     async fn assign_task_validates_payload_and_schedules() {
-        let node = bare_node("master", "m", None);
+        let node = bare_node("manager", "m", None);
 
         // Missing fields -> rejected.
-        let err = node.assign_task("slave-a", json!({"kind": "Src"})).await.unwrap_err();
+        let err = node.assign_task("executor-a", json!({"kind": "Src"})).await.unwrap_err();
         assert!(err.contains("must include"), "{err}");
 
         // Invalid kind -> rejected.
         let err = node
-            .assign_task("slave-a", json!({"kind": "Nope", "target_crates": ["x"], "files": ["a.rs"]}))
+            .assign_task("executor-a", json!({"kind": "Nope", "target_crates": ["x"], "files": ["a.rs"]}))
             .await
             .unwrap_err();
         assert!(err.contains("invalid task kind"), "{err}");
 
-        // Slaves cannot assign.
-        let slave = bare_node("slave", "s", Some("m"));
-        assert!(slave
+        // Executors cannot assign.
+        let executor = bare_node("executor", "s", Some("m"));
+        assert!(executor
             .assign_task("x", json!({"kind": "Src", "target_crates": ["x"], "files": ["a.rs"]}))
             .await
             .is_err());
@@ -3393,7 +3413,7 @@ mod coordination_tests {
         // Valid assign -> task lands in the table. A Src task has no
         // dependencies, so the server auto-releases it to Ready immediately.
         let r = node
-            .assign_task("slave-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
             .await
             .unwrap();
         assert_eq!(r["ok"], true, "{r}");
@@ -3402,29 +3422,29 @@ mod coordination_tests {
         assert_eq!(node.task_list().await["total"], 1);
         let show = node.task_show(&tid).await;
         assert_eq!(show["task"]["kind"], "Src");
-        assert_eq!(show["task"]["owner"], "slave-a");
+        assert_eq!(show["task"]["owner"], "executor-a");
     }
 
     #[tokio::test]
     async fn validate_released_when_src_reports_done() {
-        let node = Arc::new(bare_node("master", "m", None));
+        let node = Arc::new(bare_node("manager", "m", None));
         let src = node
-            .assign_task("slave-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
             .await
             .unwrap();
         let src_id = src["task_id"].as_str().unwrap().to_string();
         let val = node
-            .assign_task("slave-c", json!({"kind": "Validate", "target_crates": ["crate-x"], "files": ["tests/x.rs"]}))
+            .assign_task("executor-c", json!({"kind": "Validate", "target_crates": ["crate-x"], "files": ["tests/x.rs"]}))
             .await
             .unwrap();
         let val_id = val["task_id"].as_str().unwrap().to_string();
         assert_eq!(val["state"], "Scheduled", "validate waits for the src task: {val}");
 
-        // slave-a reports `done` for its src task (4-state protocol).
+        // executor-a reports `done` for its src task (4-state protocol).
         node.on_status(
-            "slave-a",
+            "executor-a",
             &json!({
-                "sid": "slave-a",
+                "sid": "executor-a",
                 "state": "done",
                 "task_id": src_id,
                 "task_kind": "Src",
@@ -3453,9 +3473,9 @@ mod coordination_tests {
 
     #[tokio::test]
     async fn task_cancel_and_force_update_schedule() {
-        let node = bare_node("master", "m", None);
+        let node = bare_node("manager", "m", None);
         let r = node
-            .assign_task("slave-a", json!({"kind": "Validate", "target_crates": ["crate-x"], "files": ["tests/x.rs"]}))
+            .assign_task("executor-a", json!({"kind": "Validate", "target_crates": ["crate-x"], "files": ["tests/x.rs"]}))
             .await
             .unwrap();
         let tid = r["task_id"].as_str().unwrap().to_string();
@@ -3467,7 +3487,7 @@ mod coordination_tests {
 
         // Invalid forced state is rejected.
         let r2 = node
-            .assign_task("slave-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
             .await
             .unwrap();
         let tid2 = r2["task_id"].as_str().unwrap().to_string();
@@ -3479,6 +3499,282 @@ mod coordination_tests {
         assert_eq!(f2["ok"], true, "{f2}");
         assert_eq!(f2["state"], "Done");
         assert_eq!(node.task_show(&tid2).await["task"]["state"], "Done");
+    }
+
+    // -----------------------------------------------------------------------
+    // A2: task state machine transitions (status-driven)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn task_state_from_status_maps_four_state_protocol() {
+        // The executor protocol reports 4 states; the machine maps them as:
+        // done -> Done, error/failed -> Failed, everything else
+        // (working/blocked/conflict/ready echo) -> Working.
+        assert_eq!(task_state_from_status("done"), "Done");
+        assert_eq!(task_state_from_status("error"), "Failed");
+        assert_eq!(task_state_from_status("failed"), "Failed");
+        assert_eq!(task_state_from_status("working"), "Working");
+        assert_eq!(task_state_from_status("blocked"), "Working");
+        assert_eq!(task_state_from_status("conflict"), "Working");
+        assert_eq!(task_state_from_status("ready"), "Working");
+        assert_eq!(task_state_from_status(""), "Working");
+        assert_eq!(task_state_from_status("bogus"), "Working");
+    }
+
+    #[test]
+    fn non_validate_kinds_have_no_dependencies() {
+        // Only Validate tasks accumulate dependency edges; Src/Deps/Docs/Release
+        // never depend on anything, even with overlapping crates.
+        let mut s = state();
+        add_task(&mut s, "s1", "Src", &["crate-x"], &["src/a.rs"], "A", "Scheduled", &[]);
+        for kind in ["Src", "Deps", "Docs", "Release"] {
+            assert_eq!(
+                compute_depends_on(&s, kind, &json!(["crate-x"])),
+                Vec::<String>::new(),
+                "{kind} must not depend on anything"
+            );
+        }
+        let deps = compute_depends_on(&s, "Validate", &json!(["crate-x"]));
+        assert_eq!(deps, vec!["s1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn task_state_machine_full_lifecycle() {
+        // Ready -> Working -> Done, driven entirely by the executor's 4-state
+        // status reports; each transition lands in the task table and event log.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let r = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .await
+            .unwrap();
+        let tid = r["task_id"].as_str().unwrap().to_string();
+        assert_eq!(r["state"], "Ready", "{r}");
+
+        // Executor starts: Ready -> Working.
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "working", "task_id": tid})).await;
+        assert_eq!(node.task_show(&tid).await["task"]["state"], "Working");
+
+        // Executor finishes: Working -> Done.
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "done", "task_id": tid})).await;
+        let show = node.task_show(&tid).await;
+        assert_eq!(show["task"]["state"], "Done", "{show}");
+
+        // All three transitions were recorded as task events, in order.
+        let s = node.state.lock().await;
+        let states: Vec<&str> = s
+            .events
+            .iter()
+            .filter(|e| {
+                e.get("kind").and_then(|v| v.as_str()) == Some("task")
+                    && e.get("task_id").and_then(|v| v.as_str()) == Some(tid.as_str())
+            })
+            .map(|e| e.get("state").and_then(|v| v.as_str()).unwrap_or(""))
+            .collect();
+        assert_eq!(states, vec!["Ready", "Working", "Done"], "{states:?}");
+    }
+
+    #[tokio::test]
+    async fn blocked_and_conflict_keep_task_working_until_done() {
+        // blocked / conflict are waiting states, not failures: the task stays
+        // Working and only a later done/error moves it on.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let r = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .await
+            .unwrap();
+        let tid = r["task_id"].as_str().unwrap().to_string();
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "working", "task_id": tid})).await;
+
+        for st in ["blocked", "conflict"] {
+            node.on_status(
+                "executor-a",
+                &json!({"sid": "executor-a", "state": st, "task_id": tid, "blocked_reason": "waiting on B"}),
+            )
+            .await;
+            assert_eq!(
+                node.task_show(&tid).await["task"]["state"],
+                "Working",
+                "status {st} must not move the task"
+            );
+        }
+
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "done", "task_id": tid})).await;
+        assert_eq!(node.task_show(&tid).await["task"]["state"], "Done");
+    }
+
+    #[tokio::test]
+    async fn terminal_states_are_not_regressed_by_status() {
+        // Done/Failed are terminal: a later status (even error/done) cannot
+        // regress them. The only override is the agent's `task_force`.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let r = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .await
+            .unwrap();
+        let tid = r["task_id"].as_str().unwrap().to_string();
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "working", "task_id": tid})).await;
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "done", "task_id": tid})).await;
+        assert_eq!(node.task_show(&tid).await["task"]["state"], "Done");
+
+        // A late error after done must not flip the task to Failed.
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "error", "task_id": tid})).await;
+        assert_eq!(
+            node.task_show(&tid).await["task"]["state"],
+            "Done",
+            "terminal Done must survive a late error status"
+        );
+
+        // A failed task stays Failed even if the executor later reports done
+        // (a retry is a new task, not a regression of this one).
+        let r2 = node
+            .assign_task("executor-b", json!({"kind": "Src", "target_crates": ["crate-y"], "files": ["src/b.rs"]}))
+            .await
+            .unwrap();
+        let tid2 = r2["task_id"].as_str().unwrap().to_string();
+        node.on_status("executor-b", &json!({"sid": "executor-b", "state": "error", "task_id": tid2})).await;
+        assert_eq!(node.task_show(&tid2).await["task"]["state"], "Failed");
+        node.on_status("executor-b", &json!({"sid": "executor-b", "state": "done", "task_id": tid2})).await;
+        assert_eq!(node.task_show(&tid2).await["task"]["state"], "Failed");
+
+        // task_force remains the agent's override channel.
+        let f = node.task_force(&tid2, "Done").await;
+        assert_eq!(f["ok"], true, "{f}");
+        assert_eq!(node.task_show(&tid2).await["task"]["state"], "Done");
+    }
+
+    #[tokio::test]
+    async fn status_from_non_owner_is_ignored() {
+        // An executor's status only moves its own task: another executor reporting on
+        // the same task id must not rewrite the owner's task state.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let r = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .await
+            .unwrap();
+        let tid = r["task_id"].as_str().unwrap().to_string();
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "working", "task_id": tid})).await;
+        assert_eq!(node.task_show(&tid).await["task"]["state"], "Working");
+
+        // executor-b claims executor-a's task is done: ignored.
+        node.on_status("executor-b", &json!({"sid": "executor-b", "state": "done", "task_id": tid})).await;
+        assert_eq!(
+            node.task_show(&tid).await["task"]["state"],
+            "Working",
+            "non-owner status must not move the task"
+        );
+
+        // The real owner still finishes it.
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "done", "task_id": tid})).await;
+        assert_eq!(node.task_show(&tid).await["task"]["state"], "Done");
+    }
+
+    #[tokio::test]
+    async fn failed_src_blocks_validate_until_agent_force() {
+        // A Src that fails leaves its Validate waiting (Scheduled); only the
+        // agent's explicit override (task_force to Done / cancel) unblocks it —
+        // failure routing is a human decision, not automatic.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let src = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .await
+            .unwrap();
+        let src_id = src["task_id"].as_str().unwrap().to_string();
+        let val = node
+            .assign_task("executor-c", json!({"kind": "Validate", "target_crates": ["crate-x"], "files": ["tests/x.rs"]}))
+            .await
+            .unwrap();
+        let val_id = val["task_id"].as_str().unwrap().to_string();
+        assert_eq!(val["state"], "Scheduled", "{val}");
+
+        // src errors -> Failed; the Validate stays Scheduled.
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "error", "task_id": src_id})).await;
+        assert_eq!(node.task_show(&src_id).await["task"]["state"], "Failed");
+        assert_eq!(node.task_show(&val_id).await["task"]["state"], "Scheduled");
+
+        // Agent override: force the failed dep to Done -> Validate auto-releases.
+        let f = node.task_force(&src_id, "Done").await;
+        assert_eq!(f["ok"], true, "{f}");
+        assert_eq!(node.task_show(&val_id).await["task"]["state"], "Ready");
+    }
+
+    #[tokio::test]
+    async fn cancelled_dependency_unblocks_validate() {
+        // Cancelling a dependency removes it from the table, so a queued
+        // Validate no longer waits on it and is auto-released.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let src = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .await
+            .unwrap();
+        let src_id = src["task_id"].as_str().unwrap().to_string();
+        let val = node
+            .assign_task("executor-c", json!({"kind": "Validate", "target_crates": ["crate-x"], "files": ["tests/x.rs"]}))
+            .await
+            .unwrap();
+        let val_id = val["task_id"].as_str().unwrap().to_string();
+        assert_eq!(val["state"], "Scheduled", "{val}");
+
+        let c = node.task_cancel(&src_id).await;
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(node.task_show(&val_id).await["task"]["state"], "Ready");
+    }
+
+    #[tokio::test]
+    async fn global_serial_queues_second_global_task_until_first_done() {
+        // At most one global-shared-state task is ever active (Ready/Working):
+        // assigning a second Cargo.lock task while the first is still active
+        // queues it in Scheduled; it is promoted only after the first finishes.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let g1 = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["Cargo.lock"]}))
+            .await
+            .unwrap();
+        let g1_id = g1["task_id"].as_str().unwrap().to_string();
+        assert_eq!(g1["state"], "Ready", "{g1}");
+
+        // Second global task must NOT become Ready while g1 is still active.
+        let g2 = node
+            .assign_task("executor-b", json!({"kind": "Src", "target_crates": ["crate-y"], "files": ["Cargo.lock"]}))
+            .await
+            .unwrap();
+        let g2_id = g2["task_id"].as_str().unwrap().to_string();
+        assert_eq!(g2["state"], "Scheduled", "g2 must queue behind g1: {g2}");
+
+        // g1 starts; g2 stays queued.
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "working", "task_id": g1_id})).await;
+        assert_eq!(node.task_show(&g1_id).await["task"]["state"], "Working");
+        assert_eq!(node.task_show(&g2_id).await["task"]["state"], "Scheduled");
+
+        // g1 done -> slot frees -> g2 is auto-promoted to Ready.
+        node.on_status("executor-a", &json!({"sid": "executor-a", "state": "done", "task_id": g1_id})).await;
+        assert_eq!(node.task_show(&g2_id).await["task"]["state"], "Ready", "g2 must start after g1 finishes");
+    }
+
+    #[tokio::test]
+    async fn validate_assigned_before_any_src_has_no_dependencies() {
+        // Dependency edges are computed at assign time from tasks that already
+        // exist. A Validate assigned before its Src sees no dependencies and is
+        // immediately Ready — the protocol (B1/P1) requires assigning
+        // Src/Deps before Validate; this test pins that ordering assumption.
+        let node = Arc::new(bare_node("manager", "m", None));
+        let val = node
+            .assign_task("executor-c", json!({"kind": "Validate", "target_crates": ["crate-x"], "files": ["tests/x.rs"]}))
+            .await
+            .unwrap();
+        let val_id = val["task_id"].as_str().unwrap().to_string();
+        assert_eq!(val["state"], "Ready", "validate assigned first has no deps yet: {val}");
+
+        // A later Src for the same crate does not retroactively gate the
+        // already-released Validate (no dependency back-fill at assign time).
+        let src = node
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .await
+            .unwrap();
+        assert_eq!(src["state"], "Ready", "{src}");
+        let show = node.task_show(&val_id).await;
+        assert_eq!(show["task"]["state"], "Ready", "{show}");
+        let deps = show["task"]["depends_on"].as_array().unwrap().clone();
+        assert!(deps.is_empty(), "no retroactive deps: {deps:?}");
     }
 
     // -----------------------------------------------------------------------
@@ -3580,17 +3876,17 @@ mod coordination_tests {
 
     #[tokio::test]
     async fn may_i_touch_auto_approves_and_escalates() {
-        let node = Arc::new(bare_node("master", "m", None));
+        let node = Arc::new(bare_node("manager", "m", None));
         {
             let mut s = node.state.lock().await;
-            add_task(&mut s, "t1", "Src", &["crate-x"], &["src/mod/one.rs"], "slave-a", "Working", &[]);
+            add_task(&mut s, "t1", "Src", &["crate-x"], &["src/mod/one.rs"], "executor-a", "Working", &[]);
         }
         // Fresh file, no claims -> auto-approved with a trace, never queued.
         node.on_rpc_request(&json!({
             "id": "r-fresh",
             "method": "may_i_touch",
-            "from": "slave-b",
-            "reply_to": "slave-b",
+            "from": "executor-b",
+            "reply_to": "executor-b",
             "params": {"files": ["src/brand_new.rs"]},
         }))
         .await;
@@ -3598,8 +3894,8 @@ mod coordination_tests {
         node.on_rpc_request(&json!({
             "id": "r-hot",
             "method": "may_i_touch",
-            "from": "slave-b",
-            "reply_to": "slave-b",
+            "from": "executor-b",
+            "reply_to": "executor-b",
             "params": {"files": ["src/mod/two.rs"]},
         }))
         .await;
@@ -3623,9 +3919,9 @@ mod coordination_tests {
 
     #[tokio::test]
     async fn approval_decide_answers_escalations() {
-        let node = bare_node("master", "m", None);
-        let slave = bare_node("slave", "s", Some("m"));
-        assert_eq!(slave.approval_decide("r1", "approve").await["ok"], false, "slave must be rejected");
+        let node = bare_node("manager", "m", None);
+        let executor = bare_node("executor", "s", Some("m"));
+        assert_eq!(executor.approval_decide("r1", "approve").await["ok"], false, "executor must be rejected");
 
         // Seed an escalation as on_rpc_request would.
         {
@@ -3633,10 +3929,10 @@ mod coordination_tests {
             s.escalations.push_back(json!({
                 "req_id": "r1",
                 "files": ["src/a.rs"],
-                "owner": "slave-a",
+                "owner": "executor-a",
                 "level": 2,
                 "reason": "same module",
-                "reply_to": "slave-a",
+                "reply_to": "executor-a",
                 "ts": 1.0,
             }));
         }
@@ -3668,13 +3964,13 @@ mod coordination_tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn zone_steal_is_master_only_and_forces_owner() {
-        let node = bare_node("master", "m", None);
-        let slave = bare_node("slave", "s", Some("m"));
-        assert_eq!(slave.zone_steal("/z").await["ok"], false, "slave zone_steal must be rejected");
+    async fn zone_steal_is_manager_only_and_forces_owner() {
+        let node = bare_node("manager", "m", None);
+        let executor = bare_node("executor", "s", Some("m"));
+        assert_eq!(executor.zone_steal("/z").await["ok"], false, "executor zone_steal must be rejected");
         {
             let mut s = node.state.lock().await;
-            s.zones.insert("/z".to_string(), json!({"owner": "slave-a", "queued": []}));
+            s.zones.insert("/z".to_string(), json!({"owner": "executor-a", "queued": []}));
         }
         let r = node.zone_steal("/z").await;
         assert_eq!(r["ok"], true, "{r}");
@@ -3687,18 +3983,18 @@ mod coordination_tests {
     async fn state_persists_tasks_across_restart() {
         let dir = temp_dir("persist");
         let cfg_dir = dir.to_str().unwrap().to_string();
-        let node = bare_node_at("master", "m", None, &cfg_dir);
+        let node = bare_node_at("manager", "m", None, &cfg_dir);
         let r = node
-            .assign_task("slave-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
+            .assign_task("executor-a", json!({"kind": "Src", "target_crates": ["crate-x"], "files": ["src/a.rs"]}))
             .await
             .unwrap();
         let tid = r["task_id"].as_str().unwrap().to_string();
         drop(node);
 
         // A fresh node on the same config dir restores the task table.
-        let node2 = bare_node_at("master", "m", None, &cfg_dir);
+        let node2 = bare_node_at("manager", "m", None, &cfg_dir);
         let show = node2.task_show(&tid).await;
         assert_eq!(show["ok"], true, "{show}");
-        assert_eq!(show["task"]["owner"], "slave-a");
+        assert_eq!(show["task"]["owner"], "executor-a");
     }
 }

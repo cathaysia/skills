@@ -1,0 +1,7 @@
+interface:
+  display_name: "Agent Mux Manager"
+  short_description: "Coordinate executor agents over MQTT (async RPC, worktree isolation, conflict avoidance)"
+  default_prompt: "Use $agent-mux-manager to act as the coordinator: wait for executor agents, build the executor tree, schedule their work (git worktree isolation, conflict-risk zones, priority, serialization), and track heartbeats/pending RPCs."
+
+policy:
+  allow_implicit_invocation: true

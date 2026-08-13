@@ -1,0 +1,7 @@
+interface:
+  display_name: "Agent Mux Executor"
+  short_description: "Connect as a worker to the agent-mux manager over MQTT and follow its coordination"
+  default_prompt: "Use $agent-mux-executor to act as a worker node: connect to the manager, report status (state + plan files), answer async RPCs, and follow control messages in real time."
+
+policy:
+  allow_implicit_invocation: true

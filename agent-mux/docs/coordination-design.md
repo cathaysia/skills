@@ -6,11 +6,11 @@
 
 ## 1. 这个方案是为了解决什么问题
 
-本轮改造源于一次真实的多 agent 并行开发（xidl 仓库，1 master + 多个 slave 分工：改代码、跑测试/BDD、写文档）。流程能跑通，但暴露了三类问题：
+本轮改造源于一次真实的多 agent 并行开发（xidl 仓库，1 manager + 多个 executor 分工：改代码、跑测试/BDD、写文档）。流程能跑通，但暴露了三类问题：
 
 ### 1.1 无意义的状态同步（多发状态）
 
-slave 把大量"状态"当成消息推给 master，master 再原样塞进 LLM 上下文：
+executor 把大量"状态"当成消息推给 manager，manager 再原样塞进 LLM 上下文：
 
 - 进度 tick：`working` 反复上报，每次都是自然语言一条；
 - 回声：`ready`/`done` 重复报告，`ctrl_ack` 确认又回一条；
@@ -24,18 +24,18 @@ slave 把大量"状态"当成消息推给 master，master 再原样塞进 LLM �
 
 | 根因 | 具体表现 |
 |---|---|
-| 单一共享 worktree | fixer 和 test slave 同时改 `tests/protocol_complex.rs`，改代码的和跑测试的没有隔离 |
-| 写集合扩张未申报 | fixer 的 plan 中途扩张进 test slave 的领地，分配时算好的边界失效 |
-| 依赖边被未完成 WIP 阻塞 | BDD slave 链接 `xidl-jsonrpc` 时被另一个 slave 改到一半的 `session/mod.rs` 卡住（E0515），只能靠 clean-HEAD worktree 绕过，等 fixer 收尾 |
+| 单一共享 worktree | fixer 和 test executor 同时改 `tests/protocol_complex.rs`，改代码的和跑测试的没有隔离 |
+| 写集合扩张未申报 | fixer 的 plan 中途扩张进 test executor 的领地，分配时算好的边界失效 |
+| 依赖边被未完成 WIP 阻塞 | BDD executor 链接 `xidl-jsonrpc` 时被另一个 executor 改到一半的 `session/mod.rs` 卡住（E0515），只能靠 clean-HEAD worktree 绕过，等 fixer 收尾 |
 | zone lock 非权威 | fixer "claim" 了 zone，但 `list_zones` 始终是 `{}`，锁没有成为可查询的真相源 |
 
 核心教训：**冲突不是发生在分配时，而是发生在依赖边和写集合随时间变化时**。靠"冲突发生后上报"补救，永远慢半拍。
 
 ### 1.3 Agent 读取了每个事件、做了每个决策
 
-- 测试 slave 能不能对还没改完的 src 跑校验？—— 这种机械判定也要 agent 看一遍事件再拍板；
+- 测试 executor 能不能对还没改完的 src 跑校验？—— 这种机械判定也要 agent 看一遍事件再拍板；
 - 某个 RPC 是不是还 pending？—— 也要 agent 主动查；
-- 该不该让另一个 slave 开始测试？—— 要靠 master agent 盯着状态手工放行。
+- 该不该让另一个 executor 开始测试？—— 要靠 manager agent 盯着状态手工放行。
 
 凡是**可计算的调度逻辑**，都不该占用 LLM 上下文。agent 只应该处理真正需要判断的事：异常、冲突仲裁、验收。
 
@@ -65,8 +65,8 @@ slave 把大量"状态"当成消息推给 master，master 再原样塞进 LLM �
 enum EventClass { Action, Noise } // 仅内部使用，不出现在任何返回值
 ```
 
-- `Action`（需要 agent 注意）：`blocked`（带 reason）、`conflict_reported`、`rpc_request`、`error`、`done`（带验收数据）、`slave_left`（且该 slave 还有未完成任务）、任务状态转换（`Working -> Failed` 等）。
-- `Noise`：`ctrl_ack` 回声、纯进度 tick、`ready` 回声、`slave_joined`、空闲/已完成 slave 的 `slave_left`。
+- `Action`（需要 agent 注意）：`blocked`（带 reason）、`conflict_reported`、`rpc_request`、`error`、`done`（带验收数据）、`executor_left`（且该 executor 还有未完成任务）、任务状态转换（`Working -> Failed` 等）。
+- `Noise`：`ctrl_ack` 回声、纯进度 tick、`ready` 回声、`executor_joined`、空闲/已完成 executor 的 `executor_left`。
 
 对外行为：
 
@@ -85,7 +85,7 @@ struct Task {
     kind: TaskKind,          // Src | Validate | Docs | Deps | Release
     target_crates: Vec<String>,
     files: Vec<String>,
-    owner: String,           // slave sid
+    owner: String,           // executor sid
     state: TaskState,        // Scheduled | Ready | Assigned | Working | Done | Failed
     depends_on: Vec<String>, // task ids，由 server 在 assign 时计算
 }
@@ -116,10 +116,10 @@ struct Task {
 
 自动批准在 digest 中留一条 trace，且**可撤销**（后续冲突上报时可回滚该次批准）。
 
-### A4 Zone lock 权威化(现在已经实现了 master 才能加锁)
+### A4 Zone lock 权威化(现在已经实现了 manager 才能加锁)
 
 - `list_zones` 成为唯一真相源；`zone_acquire` 持久化 owner；`zone_release` 校验 owner，不匹配直接报错。
-- 新增 `zone_steal <path>`，**仅 master agent 可用**，用于仲裁死锁。
+- 新增 `zone_steal <path>`，**仅 manager agent 可用**，用于仲裁死锁。
 - A2 的互斥判定、A3 的影响检查都读取这个注册表——不再各自维护一份"以为有锁"的视图。
 
 ### A5 可靠性
@@ -131,24 +131,24 @@ struct Task {
 
 ## 4. skill 改动
 
-### B1 `agent-mux-master/SKILL.md`
+### B1 `agent-mux-manager/SKILL.md`
 
 - **三阶段模型**：
-  - **P1（并行改造）**：只派 `Src`/`Deps` 任务。`Validate` 可以 assign，但 slave 侧状态是 `scheduled`，**绝不提前开跑**。
-  - **P2（统一校验）**：server 自动 release 后，做**一轮完整**校验（一次全量测试，不逐 slave 单独跑）。
+  - **P1（并行改造）**：只派 `Src`/`Deps` 任务。`Validate` 可以 assign，但 executor 侧状态是 `scheduled`，**绝不提前开跑**。
+  - **P2（统一校验）**：server 自动 release 后，做**一轮完整**校验（一次全量测试，不逐 executor 单独跑）。
   - **P3（失败路由）**：校验失败按"谁可用 + 谁有能力"路由，不按任务 owner。
-- **状态协议**：slave 只上报 4 类状态：`blocked` / `conflict` / `done` / `error`。禁止 tick、禁止回声。
-- **消费纪律**：master 只消费 digest 里的 actionable 项；绝不读原始事件；绝不每个事件全量 poll topology / pending。
+- **状态协议**：executor 只上报 4 类状态：`blocked` / `conflict` / `done` / `error`。禁止 tick、禁止回声。
+- **消费纪律**：manager 只消费 digest 里的 actionable 项；绝不读原始事件；绝不每个事件全量 poll topology / pending。
 - **写集合纪律**：每次 assign 都必须声明 kind + target_crates + files，中途写集合扩张必须先 `may_i_touch`。
-- **角色定位**：master 是"异常处理器"（仲裁冲突、审批升级、覆盖调度），不是调度器（调度由 server 算）。
+- **角色定位**：manager 是"异常处理器"（仲裁冲突、审批升级、覆盖调度），不是调度器（调度由 server 算）。
 
-### B2 `agent-mux-slave/SKILL.md`
+### B2 `agent-mux-executor/SKILL.md`
 
 - 同样的 4 类状态纪律：无 tick、无 ack 回声。
-- 收到 assign 后，用 kind + files + target 向 master 确认（即 `report_status` 带这些字段）。
+- 收到 assign 后，用 kind + files + target 向 manager 确认（即 `report_status` 带这些字段）。
 - 触碰任何新文件前必须先 `may_i_touch`。
 - **P1 期间绝不跑全量 suite**——等 `release` 控制消息。
-- 测试失败统一上报 master，由 master 路由修复者，不在 slave 内自行扩大写集合。
+- 测试失败统一上报 manager，由 manager 路由修复者，不在 executor 内自行扩大写集合。
 
 ---
 
@@ -167,7 +167,7 @@ struct Task {
 - **分类器单元测试**：ack / tick → noise；blocked / conflict / rpc_request → action；空 wake 不唤醒。
 - **调度器测试**：2 个 src + 1 个 validate，断言 validate 在 src 全部 `Done` 前不是 `Ready`；跨 crate 依赖用例（crate A 依赖 B，B 未完成时 A 的 validate 阻塞）。
 - **审批测试**：五级影响每级一个用例；自动批准仅覆盖无风险路径。
-- **集成 3-slave 演练**：A 改 codec、B 改 transport、C 做校验——断言零人工干预、C 恰好被唤醒一次、release 由 server 自动发出。
+- **集成 3-executor 演练**：A 改 codec、B 改 transport、C 做校验——断言零人工干预、C 恰好被唤醒一次、release 由 server 自动发出。
 - **回归**：`cargo test`、`cargo clippy --all-targets --all-features -- -D warnings` 通过。
 
 ---

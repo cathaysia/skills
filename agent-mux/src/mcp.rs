@@ -2,7 +2,7 @@
 //!
 //! JSON-RPC 2.0 over stdin/stdout (one JSON object per line). All logs go to
 //! stderr so they never corrupt the wire protocol. The node is created lazily:
-//! the agent calls `mux_init` after the master/slave skill loads, or the
+//! the agent calls `mux_init` after the manager/executor skill loads, or the
 //! process auto-initializes when `--role` is given and a session id is known.
 
 use crate::config::{default_root, load_config, resolve_session_id, Config};
@@ -116,7 +116,7 @@ fn require_node() -> Result<Arc<Node>, String> {
     match g.as_ref() {
         Some(n) => Ok(n.clone()),
         None => Err(
-            "agent-mux node not initialized: call mux_init(role='master'|'slave', \
+            "agent-mux node not initialized: call mux_init(role='manager'|'executor', \
              session_id=<your Codex session id>) first (after the skill loads)"
                 .to_string(),
         ),
@@ -128,13 +128,13 @@ fn require_node() -> Result<Arc<Node>, String> {
 // ---------------------------------------------------------------------------
 
 async fn handle_mux_init(args: &Value) -> Result<Value, String> {
-    let role = arg_str(args, "role").ok_or("mux_init: role is required ('master' or 'slave')")?;
-    if role != "master" && role != "slave" {
-        return Err(format!("mux_init: invalid role {role:?} (expected master|slave)"));
+    let role = arg_str(args, "role").ok_or("mux_init: role is required ('manager' or 'executor')")?;
+    if role != "manager" && role != "executor" {
+        return Err(format!("mux_init: invalid role {role:?} (expected manager|executor)"));
     }
     let session_id = arg_str(args, "session_id");
     let parent_id = arg_str(args, "parent_id");
-    let master_sid = arg_str(args, "master_sid");
+    let manager_sid = arg_str(args, "manager_sid");
     let config_dir = arg_str_or(args, "config_dir", crate::config::DEFAULT_CONFIG_DIR);
     let root = arg_str(args, "root")
         .or_else(|| default_root().map(|s| s.to_string()));
@@ -151,7 +151,7 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
     // Reuse an existing node when role + session id match (e.g. the process
     // auto-initialized at startup with the same session). Reconfiguring instead
     // of stopping/recreating avoids clearing the retained hb/registry on the
-    // broker, which would make the master see a spurious offline blip.
+    // broker, which would make the manager see a spurious offline blip.
     let reuse = {
         let g = global_node().lock().unwrap();
         g.as_ref()
@@ -159,7 +159,7 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
             .cloned()
     };
     if let Some(old) = reuse {
-        old.reconfigure(parent_id, master_sid).await;
+        old.reconfigure(parent_id, manager_sid).await;
         let mut out = old.identity().await;
         if let Some(m) = out.as_object_mut() {
             m.insert("ok".to_string(), json!(true));
@@ -181,7 +181,7 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
         &role,
         &sid,
         parent_id,
-        master_sid,
+        manager_sid,
         &conf.root,
         &config_dir,
         &conf,
@@ -191,7 +191,7 @@ async fn handle_mux_init(args: &Value) -> Result<Value, String> {
     .map_err(|e| {
         format!(
             "could not connect to MQTT broker: {e}. Is the broker running? \
-             See agent-mux-master/scripts/docker-compose.yml (docker compose up -d)."
+             See agent-mux/docker-compose.yml (docker compose up -d)."
         )
     })?;
     *global_node().lock().unwrap() = Some(node.clone());
@@ -206,17 +206,17 @@ async fn handle_mux_status(args: &Value) -> Result<Value, String> {
     let node = require_node()?;
     let _ = args;
     let ident = node.identity().await;
-    let (known_slaves, pending, zones) = {
+    let (known_executors, pending, zones) = {
         let s = node.state.lock().await;
         (
-            if node.role == "master" { s.registry.len() } else { 0 },
+            if node.role == "manager" { s.registry.len() } else { 0 },
             s.pending.len(),
             s.zones.len(),
         )
     };
     let mut out = ident;
     if let Some(m) = out.as_object_mut() {
-        m.insert("known_slaves".to_string(), json!(known_slaves));
+        m.insert("known_executors".to_string(), json!(known_executors));
         m.insert("pending_rpcs".to_string(), json!(pending));
         m.insert("zones".to_string(), json!(zones));
     }
@@ -315,11 +315,11 @@ async fn handle_send_control(args: &Value) -> Result<Value, String> {
     let target = arg_str(args, "target").ok_or("send_control: target is required")?;
     let kind = arg_str(args, "kind").ok_or("send_control: kind is required")?;
     let payload = arg_value(args, "payload");
-    // A2: on the master, `assign` goes through the task scheduler (strong
+    // A2: on the manager, `assign` goes through the task scheduler (strong
     // validation of kind/target_crates/files + dependency computation +
     // auto-release). The generic control path still applies for all other
     // kinds (release, pause, resume, replan, ...).
-    if kind == "assign" && node.role == "master" {
+    if kind == "assign" && node.role == "manager" {
         return node
             .assign_task(&target, payload.unwrap_or_else(|| json!({})))
             .await;
@@ -478,21 +478,21 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "mux_init",
             description: "Initialize the agent-mux node and connect to the MQTT broker. \
-Must be called once after the master/slave skill loads; the role is decided by the skill \
-(agent-mux-master -> 'master', agent-mux-slave -> 'slave'). session_id defaults to \
+Must be called once after the manager/executor skill loads; the role is decided by the skill \
+(agent-mux-manager -> 'manager', agent-mux-executor -> 'executor'). session_id defaults to \
 $CODEX_THREAD_ID; if that is unset the agent must provide it (ask the user for the Codex \
-session id, never invent one). parent_id (slave only) makes the mesh a tree. tmux_pane is \
+session id, never invent one). parent_id (executor only) makes the mesh a tree. tmux_pane is \
 optional (auto-detected). The wake channel is MCP notify when the client declares support, \
 else tmux, else an error; override with wake='mcp'|'tmux'|'none'. Returns the node identity.",
             schema: json!({
                 "type": "object",
                 "properties": {
-                    "role": {"type": "string", "description": "'master' or 'slave'"},
+                    "role": {"type": "string", "description": "'manager' or 'executor'"},
                     "session_id": {"type": ["string", "null"], "description": "Codex session id (default $CODEX_THREAD_ID)"},
-                    "parent_id": {"type": ["string", "null"], "description": "Parent node session id (slave tree)"},
+                    "parent_id": {"type": ["string", "null"], "description": "Parent node session id (executor tree)"},
                     "config_dir": {"type": ["string", "null"], "description": "Config dir holding mqtt.conf (default ~/mqtt)"},
                     "root": {"type": ["string", "null"], "description": "MQTT topic root override"},
-                    "master_sid": {"type": ["string", "null"], "description": "Known master session id (slave only)"},
+                    "manager_sid": {"type": ["string", "null"], "description": "Known manager session id (executor only)"},
                     "tmux_pane": {"type": ["string", "null"], "description": "tmux pane id for wake injection (auto-detected)"},
                     "wake": {"type": ["string", "null"], "description": "Wake channel override: 'mcp' (MCP notify), 'tmux', or 'none'. Default: MCP notify when the agent declares support, else tmux, else error."}
                 },
@@ -501,19 +501,19 @@ else tmux, else an error; override with wake='mcp'|'tmux'|'none'. Returns the no
         },
         Tool {
             name: "mux_status",
-            description: "Return node identity plus a compact summary of known slaves, pending RPCs and zones.",
+            description: "Return node identity plus a compact summary of known executors, pending RPCs and zones.",
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
             name: "topology",
-            description: "Return the slave tree (session ids + parent ids) known to the master.",
+            description: "Return the executor tree (session ids + parent ids) known to the manager.",
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
             name: "wait_events",
             description: "Wait for mesh events; blocks until at least one arrives (or timeout). Returns the queued \
-events as a list ([] on timeout). Master events: slave_joined, slave_left, status, ctrl_ack, rpc_request, \
-conflict_reported. Slave events: rpc_request. Prefer mux_pull() at turn boundaries / the [mux] wake (MCP notify or tmux); \
+events as a list ([] on timeout). Manager events: executor_joined, executor_left, status, ctrl_ack, rpc_request, \
+conflict_reported. Executor events: rpc_request. Prefer mux_pull() at turn boundaries / the [mux] wake (MCP notify or tmux); \
 only use this blocking wait when you genuinely want to block.",
             schema: json!({
                 "type": "object",
@@ -524,13 +524,13 @@ only use this blocking wait when you genuinely want to block.",
             name: "mux_pull",
             description: "Non-blocking: return all messages already queued for this node. Returns \
 {\"control\": [...], \"rpc_requests\": [...], \"events\": [...]} without waiting. Call this at turn \
-boundaries, or when a wake hint (MCP notify / tmux [mux]) tells you the master sent something. Messages stay queued until consumed \
+boundaries, or when a wake hint (MCP notify / tmux [mux]) tells you the manager sent something. Messages stay queued until consumed \
 here or by the blocking wait_* tools, so nothing is lost.",
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
             name: "wait_control",
-            description: "Wait for the next control message from the master (blocks inside the call). Prefer mux_pull() \
+            description: "Wait for the next control message from the manager (blocks inside the call). Prefer mux_pull() \
 at turn boundaries / the [mux] wake (MCP notify or tmux); only use this blocking wait when you genuinely want to block. Returns \
 {\"received\": true, \"message\": {kind, payload, from, request_id, ts}} or \
 {\"received\": false, \"reason\": \"timeout\", \"waited\": <seconds>}.",
@@ -590,7 +590,7 @@ the result arrives later via get_result() / list_pending().",
         },
         Tool {
             name: "list_pending",
-            description: "List pending RPC requests the master has sent but not yet completed.",
+            description: "List pending RPC requests the manager has sent but not yet completed.",
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
@@ -626,7 +626,7 @@ the result arrives later via get_result() / list_pending().",
         },
         Tool {
             name: "send_control",
-            description: "Send a control message (master -> slave). kind is one of 'assign' (payload: {task, files, priority}), 'pause', 'resume', 'replan' (payload: updated plan), 'priority' (payload: new order) — or any free-form kind.",
+            description: "Send a control message (manager -> executor). kind is one of 'assign' (payload: {task, files, priority}), 'pause', 'resume', 'replan' (payload: updated plan), 'priority' (payload: new order) — or any free-form kind.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -639,9 +639,9 @@ the result arrives later via get_result() / list_pending().",
         },
         Tool {
             name: "report_status",
-            description: "Report this slave's status to the master (state + touched files + message). Call with \
+            description: "Report this executor's status to the manager (state + touched files + message). Call with \
 state='planning' / 'ready' / 'working' / 'blocked' / 'done' and plan_files = the concrete files you intend to \
-modify when you are ready to coordinate, so the master can schedule work and avoid conflicts.",
+modify when you are ready to coordinate, so the manager can schedule work and avoid conflicts.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -660,7 +660,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "zone_acquire",
-            description: "MASTER ONLY: acquire/assign the lock for a path/zone. owner defaults to this node; pass owner to assign the zone to a slave; force steals it from the current owner. Slaves cannot lock zones: request ownership with zone_request.",
+            description: "MANAGER ONLY: acquire/assign the lock for a path/zone. owner defaults to this node; pass owner to assign the zone to an executor; force steals it from the current owner. Executors cannot lock zones: request ownership with zone_request.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -673,7 +673,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "zone_release",
-            description: "MASTER ONLY: release the lock for a path/zone (only the current owner may release; the zone is handed to the next queued owner). Slaves relinquish a zone with zone_request(path, release=true).",
+            description: "MANAGER ONLY: release the lock for a path/zone (only the current owner may release; the zone is handed to the next queued owner). Executors relinquish a zone with zone_request(path, release=true).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -685,7 +685,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "zone_request",
-            description: "Request zone ownership from the master (slave). The master's registry decides: grants the zone when free, FIFO-queues you behind the current owner, or (release=true) releases the zone to the next queued owner if you own it. Returns an async RPC request_id; await it with get_result/await_result. Slaves cannot lock zones directly.",
+            description: "Request zone ownership from the manager (executor). The manager's registry decides: grants the zone when free, FIFO-queues you behind the current owner, or (release=true) releases the zone to the next queued owner if you own it. Returns an async RPC request_id; await it with get_result/await_result. Executors cannot lock zones directly.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -702,7 +702,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "zone_steal",
-            description: "Master only: force zone ownership to the master session id, breaking a deadlock. Publishes the authoritative registry and notifies watchers (zone_released). Use only to arbitrate a stuck zone.",
+            description: "Manager only: force zone ownership to the manager session id, breaking a deadlock. Publishes the authoritative registry and notifies watchers (zone_released). Use only to arbitrate a stuck zone.",
             schema: json!({
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
@@ -721,7 +721,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "approval_decide",
-            description: "Master only: decide an escalated may_i_touch request. approve/deny answer the requester via the stored reply_to and record a decision trace; queue keeps the escalation pending without answering. Unknown or already-decided req_id is an error.",
+            description: "Manager only: decide an escalated may_i_touch request. approve/deny answer the requester via the stored reply_to and record a decision trace; queue keeps the escalation pending without answering. Unknown or already-decided req_id is an error.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -733,12 +733,12 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "task_list",
-            description: "Master: list the task table in stable insertion order (id, kind, target_crates, files, owner, state, depends_on).",
+            description: "Manager: list the task table in stable insertion order (id, kind, target_crates, files, owner, state, depends_on).",
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
             name: "task_show",
-            description: "Master: show a single task by id.",
+            description: "Manager: show a single task by id.",
             schema: json!({
                 "type": "object",
                 "properties": {"task_id": {"type": "string"}},
@@ -747,7 +747,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "task_cancel",
-            description: "Master only: cancel (remove) a task and recompute readiness — a cancelled dependency may auto-release a queued Validate.",
+            description: "Manager only: cancel (remove) a task and recompute readiness — a cancelled dependency may auto-release a queued Validate.",
             schema: json!({
                 "type": "object",
                 "properties": {"task_id": {"type": "string"}},
@@ -756,7 +756,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "task_force",
-            description: "Master only: the agent's explicit override of the dependency graph. Sets a task's state directly (Scheduled|Ready|Assigned|Working|Done|Failed), then recomputes readiness so forcing a dependency to Done releases its Validate. This is the only agent override of scheduling.",
+            description: "Manager only: the agent's explicit override of the dependency graph. Sets a task's state directly (Scheduled|Ready|Assigned|Working|Done|Failed), then recomputes readiness so forcing a dependency to Done releases its Validate. This is the only agent override of scheduling.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -768,7 +768,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "mux_watch",
-            description: "Register a watch for a master-produced event (slave). When a matching event fires, the master routes it back to you and your node wakes you ([mux] hint) — no polling needed. kind today: 'zone_released' (a zone got unlocked, including handoff to a queued owner). filter narrows the event: {'path': '/x'} exact path, {'path_prefix': '/x'} any path under it, {} or absent = any event of that kind. ttl (seconds) is optional; the watch expires after ttl. Returns the watch_id (see watch_cancel).",
+            description: "Register a watch for a manager-produced event (executor). When a matching event fires, the manager routes it back to you and your node wakes you ([mux] hint) — no polling needed. kind today: 'zone_released' (a zone got unlocked, including handoff to a queued owner). filter narrows the event: {'path': '/x'} exact path, {'path_prefix': '/x'} any path under it, {} or absent = any event of that kind. ttl (seconds) is optional; the watch expires after ttl. Returns the watch_id (see watch_cancel).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -781,7 +781,7 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "watch_cancel",
-            description: "Cancel a previously registered watch (slave). The master stops routing events for this watch_id.",
+            description: "Cancel a previously registered watch (executor). The manager stops routing events for this watch_id.",
             schema: json!({
                 "type": "object",
                 "properties": {"watch_id": {"type": "string"}},
@@ -790,10 +790,10 @@ modify when you are ready to coordinate, so the master can schedule work and avo
         },
         Tool {
             name: "report_conflict",
-            description: "Report a conflict (or a conflict risk) to the master. Call this when your edits collide \
-with another slave's work, or when you detect a high-risk overlap. files = concrete paths involved, zone = an \
-optional shared path/zone name, severity = low|medium|high|critical, suggestion = how the master should adjust \
-(e.g. 'serialize zone X'). The master records and persists the report and uses it to mark risk zones and \
+            description: "Report a conflict (or a conflict risk) to the manager. Call this when your edits collide \
+with another executor's work, or when you detect a high-risk overlap. files = concrete paths involved, zone = an \
+optional shared path/zone name, severity = low|medium|high|critical, suggestion = how the manager should adjust \
+(e.g. 'serialize zone X'). The manager records and persists the report and uses it to mark risk zones and \
 serialize work, so coordination improves over time.",
             schema: json!({
                 "type": "object",
@@ -808,7 +808,7 @@ serialize work, so coordination improves over time.",
         },
         Tool {
             name: "list_conflicts",
-            description: "Master: list recorded conflict reports (newest first).",
+            description: "Manager: list recorded conflict reports (newest first).",
             schema: json!({
                 "type": "object",
                 "properties": {"limit": {"type": ["integer", "null"], "description": "max entries (default 50)"}}
@@ -816,8 +816,8 @@ serialize work, so coordination improves over time.",
         },
         Tool {
             name: "risk_zones",
-            description: "Master: aggregate conflict history into per-path risk zones. Paths with more conflict \
-reports rank higher; the master should serialize work on high-count paths and treat them as conflict-risk zones.",
+            description: "Manager: aggregate conflict history into per-path risk zones. Paths with more conflict \
+reports rank higher; the manager should serialize work on high-count paths and treat them as conflict-risk zones.",
             schema: json!({"type": "object", "properties": {}}),
         },
     ]

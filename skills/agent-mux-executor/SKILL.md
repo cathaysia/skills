@@ -1,13 +1,13 @@
 ---
-name: agent-mux-slave
-description: Act as a worker ("slave") node in an MQTT-based multi-agent mesh. Use when you are a slave agent that must connect to the master (or a parent slave), report your status (state + plan files) so the master can coordinate, accept the master's work assignments/control messages and adjust in real time, answer async RPCs, and maintain a heartbeat so the master can detect when you drop offline.
+name: agent-mux-executor
+description: Act as a worker ("executor") node in an MQTT-based multi-agent mesh. Use when you are an executor agent that must connect to the manager (or a parent executor), report your status (state + plan files) so the manager can coordinate, accept the manager's work assignments/control messages and adjust in real time, answer async RPCs, and maintain a heartbeat so the manager can detect when you drop offline.
 ---
 
-# agent-mux-slave
+# agent-mux-executor
 
-You are a **slave** node of an agent mesh. You connect to the master (or a
-parent slave) in a tree, heartbeat to stay alive, report status so the master
-can schedule work, answer async RPCs, and follow the master's control
+You are an **executor** node of an agent mesh. You connect to the manager (or a
+parent executor) in a tree, heartbeat to stay alive, report status so the manager
+can schedule work, answer async RPCs, and follow the manager's control
 messages. The server computes scheduling; you confirm assignments, do your
 work, and only escalate what needs a human-level decision.
 
@@ -18,21 +18,21 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
 ## Start
 
 1. Initialize the node once:
-   - `mux_init(role="slave", parent_id=<master_sid>)` for a direct child of the
-     master, or `parent_id=<parent_slave_sid>` for a deeper tree node.
-   - If the master's session id is unknown, use `mux_init(role="slave")` and
+   - `mux_init(role="executor", parent_id=<manager_sid>)` for a direct child of the
+     manager, or `parent_id=<parent_executor_sid>` for a deeper tree node.
+   - If the manager's session id is unknown, use `mux_init(role="executor")` and
      read it from `mux_status()`.
    Your session id comes from `$CODEX_THREAD_ID`; if it is unset, **ask the
    user for the Codex session id** — never invent one.
 2. The heartbeat is automatic (background thread in the MCP process). Do **not**
-   block at startup waiting for the master: it only sends control when it has
+   block at startup waiting for the manager: it only sends control when it has
    something to coordinate. Do your own work first, and check `mux_pull()` at
    turn boundaries (or when a `[mux]` wake hint arrives — via MCP notify when
    your agent supports it, else tmux).
 
 ## Reporting status — 4 states only
 
-The master coordinates by what you report. Report **only** these 4 states; no
+The manager coordinates by what you report. Report **only** these 4 states; no
 progress ticks, no echoes, no repeated `working`:
 
 - `report_status(state="blocked", blocked_reason=..., task_id=...)` — waiting
@@ -40,19 +40,19 @@ progress ticks, no echoes, no repeated `working`:
 - `report_status(state="done", message=..., task_id=...)` — finished (include
   acceptance data in `message` when available).
 - `report_status(state="error", message=..., task_id=...)` — failed; always
-  report test/build failures to the master — never silently expand your write
+  report test/build failures to the manager — never silently expand your write
   set to fix them.
 - `report_status(state="conflict", message=..., task_id=...)` — you hit (or
-  foresee) a collision with another slave. Also use
+  foresee) a collision with another executor. Also use
   `report_conflict(files=[...], zone=..., description=..., severity=...,
-  suggestion=...)` so the master learns and adjusts.
+  suggestion=...)` so the manager learns and adjusts.
 
 When you receive an `assign`, confirm it with
 `report_status(state="working", plan_files=[...], message=...)` **including
-the task id, kind, files and target crates** so the master's task table tracks
+the task id, kind, files and target crates** so the manager's task table tracks
 your progress.
 
-## Receiving master messages
+## Receiving manager messages
 
 - `mux_pull()` non-blockingly returns everything queued for you:
   `{"control": [...], "rpc_requests": [...], "events": [...], "watch": [...]}`.
@@ -61,7 +61,7 @@ your progress.
   above); `pause`/`resume` -> stop/continue; `replan` -> adjust your plan;
   `priority` -> reorder your queue; `release` -> dependencies are done, you may
   start the Validate task now.
-- Never block on the master: rely on the `[mux]` wake (MCP notify when your
+- Never block on the manager: rely on the `[mux]` wake (MCP notify when your
   agent supports it, else tmux) and `mux_pull()` at turn boundaries. Do not
   call `wait_control` / `wait_rpc_requests` to wait for input.
 
@@ -69,34 +69,34 @@ your progress.
 
 - In **P1 (parallel changes)** you work only on your assigned `Src`/`Deps`
   task. If you are assigned a `Validate` task, its state is `scheduled` —
-  **never run a full suite early**. Wait for the master's `release` control
+  **never run a full suite early**. Wait for the manager's `release` control
   message, which the server sends automatically once your dependencies are
   `Done`.
 - In **P2 (unified validation)**, after release, run the **one full validation
-  pass** the master asks for.
+  pass** the manager asks for.
 
 ## Avoiding conflicts
 
 - Before touching any **new** file, ask with
-  `send_rpc(master_sid, "may_i_touch", {files: [...], owner: <your sid>})` and
+  `send_rpc(manager_sid, "may_i_touch", {files: [...], owner: <your sid>})` and
   await the result with `get_result`. The server runs a 5-level impact check:
   exact-file collisions deny/queue, same-module/crate and dependency-neighbor
-  touches escalate to the master, global shared state (Cargo.lock / .git /
+  touches escalate to the manager, global shared state (Cargo.lock / .git /
   generated dirs) is never auto-approved, and conflict-history paths escalate.
-  If the result says `escalated`, wait for the master's `approval_decide`
+  If the result says `escalated`, wait for the manager's `approval_decide`
   before touching.
-- Zones are master-assigned: request ownership with `zone_request(path)` and
+- Zones are manager-assigned: request ownership with `zone_request(path)` and
   relinquish it with `zone_request(path, release=true)` (async RPCs — await the
   returned request_id with `get_result`). You cannot lock zones yourself:
-  `zone_acquire` / `zone_release` are master-only tools.
-- Never edit a file the master assigned to another slave or in a high-risk zone
+  `zone_acquire` / `zone_release` are manager-only tools.
+- Never edit a file the manager assigned to another executor or in a high-risk zone
   (lockfiles, generated code, `.git`, build dirs) without confirmation.
-- If your work overlaps a zone owned by another slave, wait or request
-  serialization through the master — do not race.
+- If your work overlaps a zone owned by another executor, wait or request
+  serialization through the manager — do not race.
 
 ## Watching for events
 
-Instead of polling, you can wait for a **master-produced event** and be woken
+Instead of polling, you can wait for a **manager-produced event** and be woken
 when it fires:
 
 - `mux_watch(kind="zone_released", filter={"path": "/abs/path"},
@@ -105,7 +105,7 @@ when it fires:
   queued owner). `filter` narrows it: `{"path": "/x"}` exact, `{"path_prefix":
   "/x"}` any path under it, `{}`/absent = any event of that kind. `ttl`
   (seconds) is optional.
-- When a matching event fires, the master routes it to you, your node fires
+- When a matching event fires, the manager routes it to you, your node fires
   the `[mux]` wake, and the next `mux_pull()` returns it under `watch` (with
   `watch_id`, `kind`, and the `event` payload). Then re-check
   `get_zone_snapshot()` / retry `zone_request`.
@@ -123,5 +123,5 @@ when it fires:
 
 - `mux_status()` -> identity + connectivity.
 - Keep the node alive for the whole session; the heartbeat is what lets the
-  master notice if you drop. The MCP process also watches its parent: if codex
+  manager notice if you drop. The MCP process also watches its parent: if codex
   dies or the MQTT link stays down too long, it cleans up and exits by itself.

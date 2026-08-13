@@ -1,8 +1,8 @@
 //! agent-mux: MQTT-based async RPC + liveness + coordination MCP server.
 //!
-//! Single binary, two roles (`--role master|slave`). Talks MCP/JSON-RPC over
+//! Single binary, two roles (`--role manager|executor`). Talks MCP/JSON-RPC over
 //! stdio. The node is created lazily by the agent via the `mux_init` tool after
-//! the master/slave skill loads; when `--role` is given and a session id is
+//! the manager/executor skill loads; when `--role` is given and a session id is
 //! known it auto-initializes in the background.
 
 mod config;
@@ -15,9 +15,9 @@ use anyhow::Result;
 
 fn print_usage() {
     eprintln!(
-        "agent-mux {} — MQTT async-RPC/coordination MCP server (master|slave)\n\
+        "agent-mux {} — MQTT async-RPC/coordination MCP server (manager|executor)\n\
          \n\
-         usage: agent-mux [--role master|slave] [--session-id <sid>] [--config <dir>] [--root <topic-root>]\n\
+         usage: agent-mux [--role manager|executor] [--session-id <sid>] [--config <dir>] [--root <topic-root>]\n\
          \n\
          options:\n\
          \x20 --role       auto-init role (default: wait for the mux_init tool)\n\
@@ -72,8 +72,8 @@ async fn main() -> Result<()> {
     }
 
     if let Some(r) = &role {
-        if r.as_str() != "master" && r.as_str() != "slave" {
-            eprintln!("agent-mux: invalid --role {r:?} (expected master|slave)");
+        if r.as_str() != "manager" && r.as_str() != "executor" {
+            eprintln!("agent-mux: invalid --role {r:?} (expected manager|executor)");
             std::process::exit(2);
         }
     }

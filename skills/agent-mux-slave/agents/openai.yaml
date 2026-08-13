@@ -1,7 +1,0 @@
-interface:
-  display_name: "Agent Mux Slave"
-  short_description: "Connect as a worker to the agent-mux master over MQTT and follow its coordination"
-  default_prompt: "Use $agent-mux-slave to act as a worker node: connect to the master, report status (state + plan files), answer async RPCs, and follow control messages in real time."
-
-policy:
-  allow_implicit_invocation: true
