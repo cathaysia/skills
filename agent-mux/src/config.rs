@@ -40,6 +40,10 @@ pub struct Config {
     /// Wake channel preference: "mcp" | "tmux" | "none" (default: MCP notify
     /// when the agent supports it, else tmux, else error).
     pub wake: Option<String>,
+    /// When true (default), the node classifies events internally and only
+    /// wakes the agent for actionable items (digest mode). When false, every
+    /// event wakes the agent as before (opt-out / grayscale rollback).
+    pub digest_mode: bool,
 }
 
 impl Default for Config {
@@ -50,10 +54,11 @@ impl Default for Config {
             keepalive: 60,
             hb_interval: 5.0,
             hb_timeout: 15.0,
-            rpc_timeout: 30.0,
+            rpc_timeout: 60.0,
             qos: 1,
             root: String::new(),
             wake: None,
+            digest_mode: true,
         }
     }
 }
@@ -185,6 +190,9 @@ pub fn load_config(config_dir: &str, root: Option<&str>) -> Result<Config> {
                 cfg.wake = Some(s.trim().to_string());
             }
         }
+        if let Some(b) = v.get("digest_mode").and_then(|x| x.as_bool()) {
+            cfg.digest_mode = b;
+        }
         if let Some(s) = v.get("root").and_then(|x| x.as_str()) {
             if !s.is_empty() {
                 cfg.root = s.trim_matches('/').to_string();
@@ -199,6 +207,7 @@ pub fn load_config(config_dir: &str, root: Option<&str>) -> Result<Config> {
             "hb_timeout": cfg.hb_timeout,
             "rpc_timeout": cfg.rpc_timeout,
             "qos": cfg.qos,
+            "digest_mode": cfg.digest_mode,
         });
         std::fs::write(&f, serde_json::to_string_pretty(&defaults)? + "\n")?;
     }

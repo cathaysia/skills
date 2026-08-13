@@ -6,9 +6,10 @@ description: Act as a worker ("slave") node in an MQTT-based multi-agent mesh. U
 # agent-mux-slave
 
 You are a **slave** node of an agent mesh. You connect to the master (or a
-parent slave) in a tree, heartbeat to stay alive, report your status so the
-master can schedule work, answer async RPCs, and follow the master's control
-messages.
+parent slave) in a tree, heartbeat to stay alive, report status so the master
+can schedule work, answer async RPCs, and follow the master's control
+messages. The server computes scheduling; you confirm assignments, do your
+work, and only escalate what needs a human-level decision.
 
 The node is a single Rust MCP server (`agent-mux`, one binary for both roles).
 Setup (broker, build, MCP registration, `mqtt.conf`): see
@@ -29,32 +30,69 @@ Setup (broker, build, MCP registration, `mqtt.conf`): see
    turn boundaries (or when a `[mux]` wake hint arrives — via MCP notify when
    your agent supports it, else tmux).
 
-## Reporting status
+## Reporting status — 4 states only
 
-The master coordinates by what you report. Whenever your situation changes:
+The master coordinates by what you report. Report **only** these 4 states; no
+progress ticks, no echoes, no repeated `working`:
 
-- `report_status(state="planning", message=...)` — you are analyzing.
-- `report_status(state="ready", plan_files=[...], message=...)` — **when you
-  finish a plan, always include the concrete files you intend to modify** so the
-  master can schedule around conflicts.
-- `report_status(state="working", plan_files=[...])` — you started editing.
-- `report_status(state="blocked", blocked_reason=...)` — waiting on something.
-- `report_status(state="done", message=...)` — finished.
-- `report_conflict(files=[...], zone=..., description=..., severity=...,
-  suggestion=...)` — whenever you hit (or foresee) a conflict with another
-  slave or a master assignment; the master learns and adjusts.
+- `report_status(state="blocked", blocked_reason=..., task_id=...)` — waiting
+  on something.
+- `report_status(state="done", message=..., task_id=...)` — finished (include
+  acceptance data in `message` when available).
+- `report_status(state="error", message=..., task_id=...)` — failed; always
+  report test/build failures to the master — never silently expand your write
+  set to fix them.
+- `report_status(state="conflict", message=..., task_id=...)` — you hit (or
+  foresee) a collision with another slave. Also use
+  `report_conflict(files=[...], zone=..., description=..., severity=...,
+  suggestion=...)` so the master learns and adjusts.
+
+When you receive an `assign`, confirm it with
+`report_status(state="working", plan_files=[...], message=...)` **including
+the task id, kind, files and target crates** so the master's task table tracks
+your progress.
 
 ## Receiving master messages
 
 - `mux_pull()` non-blockingly returns everything queued for you:
   `{"control": [...], "rpc_requests": [...], "events": [...], "watch": [...]}`.
   Call it at the start of every turn / whenever idle.
-- React to control items: `assign` -> adopt the task (and update
-  `report_status`), `pause`/`resume` -> stop/continue, `replan` -> adjust your
-  plan, `priority` -> reorder your queue.
+- React to control items: `assign` -> adopt the task and confirm it (see
+  above); `pause`/`resume` -> stop/continue; `replan` -> adjust your plan;
+  `priority` -> reorder your queue; `release` -> dependencies are done, you may
+  start the Validate task now.
 - Never block on the master: rely on the `[mux]` wake (MCP notify when your
   agent supports it, else tmux) and `mux_pull()` at turn boundaries. Do not
   call `wait_control` / `wait_rpc_requests` to wait for input.
+
+## P1 / P2 discipline
+
+- In **P1 (parallel changes)** you work only on your assigned `Src`/`Deps`
+  task. If you are assigned a `Validate` task, its state is `scheduled` —
+  **never run a full suite early**. Wait for the master's `release` control
+  message, which the server sends automatically once your dependencies are
+  `Done`.
+- In **P2 (unified validation)**, after release, run the **one full validation
+  pass** the master asks for.
+
+## Avoiding conflicts
+
+- Before touching any **new** file, ask with
+  `send_rpc(master_sid, "may_i_touch", {files: [...], owner: <your sid>})` and
+  await the result with `get_result`. The server runs a 5-level impact check:
+  exact-file collisions deny/queue, same-module/crate and dependency-neighbor
+  touches escalate to the master, global shared state (Cargo.lock / .git /
+  generated dirs) is never auto-approved, and conflict-history paths escalate.
+  If the result says `escalated`, wait for the master's `approval_decide`
+  before touching.
+- Zones are master-assigned: request ownership with `zone_request(path)` and
+  relinquish it with `zone_request(path, release=true)` (async RPCs — await the
+  returned request_id with `get_result`). You cannot lock zones yourself:
+  `zone_acquire` / `zone_release` are master-only tools.
+- Never edit a file the master assigned to another slave or in a high-risk zone
+  (lockfiles, generated code, `.git`, build dirs) without confirmation.
+- If your work overlaps a zone owned by another slave, wait or request
+  serialization through the master — do not race.
 
 ## Watching for events
 
@@ -80,19 +118,6 @@ when it fires:
   Each item has `request_id`, `method`, `params`, `from`.
 - Always reply with `rpc_reply(request_id, result=..., error=...)` so the
   caller's pending RPC completes; otherwise it times out and may be retried.
-
-## Avoiding conflicts
-
-- Before editing, check `get_zone_snapshot()` (or ask the master via
-  `send_rpc(master_sid, "may_i_touch", {files: [...]})`).
-- Zones are master-assigned: request ownership with `zone_request(path)` and
-  relinquish it with `zone_request(path, release=true)` (async RPCs — await the
-  returned request_id with `get_result`). You cannot lock zones yourself:
-  `zone_acquire` / `zone_release` are master-only tools.
-- Never edit a file the master assigned to another slave or in a high-risk zone
-  (lockfiles, generated code, `.git`, build dirs) without confirmation.
-- If your work overlaps a zone owned by another slave, wait or request
-  serialization through the master — do not race.
 
 ## Handoff
 

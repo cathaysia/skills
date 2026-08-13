@@ -315,6 +315,15 @@ async fn handle_send_control(args: &Value) -> Result<Value, String> {
     let target = arg_str(args, "target").ok_or("send_control: target is required")?;
     let kind = arg_str(args, "kind").ok_or("send_control: kind is required")?;
     let payload = arg_value(args, "payload");
+    // A2: on the master, `assign` goes through the task scheduler (strong
+    // validation of kind/target_crates/files + dependency computation +
+    // auto-release). The generic control path still applies for all other
+    // kinds (release, pause, resume, replan, ...).
+    if kind == "assign" && node.role == "master" {
+        return node
+            .assign_task(&target, payload.unwrap_or_else(|| json!({})))
+            .await;
+    }
     let rid = node
         .send_control(&target, &kind, payload)
         .await
@@ -328,8 +337,12 @@ async fn handle_report_status(args: &Value) -> Result<Value, String> {
     let plan_files = arg_str_array(args, "plan_files");
     let message = arg_str_or(args, "message", "");
     let blocked_reason = arg_str_or(args, "blocked_reason", "");
+    let task_id = arg_str(args, "task_id");
+    let task_kind = arg_str(args, "task_kind");
+    let target_crates = arg_str_array(args, "target_crates");
+    let files = arg_str_array(args, "files");
     Ok(node
-        .report_status(&state, plan_files, &message, &blocked_reason)
+        .report_status(&state, plan_files, &message, &blocked_reason, task_id, task_kind, target_crates, files)
         .await)
 }
 
@@ -365,6 +378,51 @@ async fn handle_get_zone_snapshot(args: &Value) -> Result<Value, String> {
     let node = require_node()?;
     let _ = args;
     Ok(node.get_zone_snapshot().await)
+}
+
+async fn handle_zone_steal(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let path = arg_str(args, "path").ok_or("zone_steal: path is required")?;
+    Ok(node.zone_steal(&path).await)
+}
+
+async fn handle_mux_digest(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let since = arg_value(args, "since").and_then(|v| v.as_f64());
+    Ok(node.digest(since).await)
+}
+
+async fn handle_approval_decide(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let req_id = arg_str(args, "req_id").ok_or("approval_decide: req_id is required")?;
+    let decision =
+        arg_str(args, "decision").ok_or("approval_decide: decision (approve|deny|queue) is required")?;
+    Ok(node.approval_decide(&req_id, &decision).await)
+}
+
+async fn handle_task_list(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let _ = args;
+    Ok(node.task_list().await)
+}
+
+async fn handle_task_show(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let task_id = arg_str(args, "task_id").ok_or("task_show: task_id is required")?;
+    Ok(node.task_show(&task_id).await)
+}
+
+async fn handle_task_cancel(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let task_id = arg_str(args, "task_id").ok_or("task_cancel: task_id is required")?;
+    Ok(node.task_cancel(&task_id).await)
+}
+
+async fn handle_task_force(args: &Value) -> Result<Value, String> {
+    let node = require_node()?;
+    let task_id = arg_str(args, "task_id").ok_or("task_force: task_id is required")?;
+    let state = arg_str(args, "state").ok_or("task_force: state is required")?;
+    Ok(node.task_force(&task_id, &state).await)
 }
 
 async fn handle_mux_watch(args: &Value) -> Result<Value, String> {
@@ -643,6 +701,72 @@ modify when you are ready to coordinate, so the master can schedule work and avo
             schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
+            name: "zone_steal",
+            description: "Master only: force zone ownership to the master session id, breaking a deadlock. Publishes the authoritative registry and notifies watchers (zone_released). Use only to arbitrate a stuck zone.",
+            schema: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        },
+        Tool {
+            name: "mux_digest",
+            description: "Drain queued events into digest form: {actions, noise_counts:{ack,tick}, since}. Only actionable items appear in actions (blocked/conflict/rpc_request/approval_escalation/done/task Done|Failed), sorted decision-first; noise is counted and dropped. Pass the previous call's since to consume incrementally. Digest mode (default on) only wakes the agent when there is an actionable item.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "since": {"type": ["number", "null"], "description": "high-water mark from a previous mux_digest; events at/before it are dropped without counting"}
+                }
+            }),
+        },
+        Tool {
+            name: "approval_decide",
+            description: "Master only: decide an escalated may_i_touch request. approve/deny answer the requester via the stored reply_to and record a decision trace; queue keeps the escalation pending without answering. Unknown or already-decided req_id is an error.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "req_id": {"type": "string"},
+                    "decision": {"type": "string", "enum": ["approve", "deny", "queue"]}
+                },
+                "required": ["req_id", "decision"]
+            }),
+        },
+        Tool {
+            name: "task_list",
+            description: "Master: list the task table in stable insertion order (id, kind, target_crates, files, owner, state, depends_on).",
+            schema: json!({"type": "object", "properties": {}}),
+        },
+        Tool {
+            name: "task_show",
+            description: "Master: show a single task by id.",
+            schema: json!({
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"]
+            }),
+        },
+        Tool {
+            name: "task_cancel",
+            description: "Master only: cancel (remove) a task and recompute readiness — a cancelled dependency may auto-release a queued Validate.",
+            schema: json!({
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"]
+            }),
+        },
+        Tool {
+            name: "task_force",
+            description: "Master only: the agent's explicit override of the dependency graph. Sets a task's state directly (Scheduled|Ready|Assigned|Working|Done|Failed), then recomputes readiness so forcing a dependency to Done releases its Validate. This is the only agent override of scheduling.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "state": {"type": "string"}
+                },
+                "required": ["task_id", "state"]
+            }),
+        },
+        Tool {
             name: "mux_watch",
             description: "Register a watch for a master-produced event (slave). When a matching event fires, the master routes it back to you and your node wakes you ([mux] hint) — no polling needed. kind today: 'zone_released' (a zone got unlocked, including handoff to a queued owner). filter narrows the event: {'path': '/x'} exact path, {'path_prefix': '/x'} any path under it, {} or absent = any event of that kind. ttl (seconds) is optional; the watch expires after ttl. Returns the watch_id (see watch_cancel).",
             schema: json!({
@@ -734,6 +858,13 @@ async fn dispatch_tool(name: &str, args: &Value) -> Value {
         "zone_release" => handle_zone_release(args).await,
         "zone_request" => handle_zone_request(args).await,
         "get_zone_snapshot" => handle_get_zone_snapshot(args).await,
+        "zone_steal" => handle_zone_steal(args).await,
+        "mux_digest" => handle_mux_digest(args).await,
+        "approval_decide" => handle_approval_decide(args).await,
+        "task_list" => handle_task_list(args).await,
+        "task_show" => handle_task_show(args).await,
+        "task_cancel" => handle_task_cancel(args).await,
+        "task_force" => handle_task_force(args).await,
         "mux_watch" => handle_mux_watch(args).await,
         "watch_cancel" => handle_watch_cancel(args).await,
         "report_conflict" => handle_report_conflict(args).await,
