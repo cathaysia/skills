@@ -1,0 +1,7 @@
+interface:
+  display_name: Rust Async Lifecycle
+  short_description: RAII + TaskScope + top-level cancellation select for auditing
+    Rust async lifecycles.
+  default_prompt: Use $rust-async-lifecycle to audit every spawn/select in this repo
+    and fix them with "spawn at the call site, select cancellation at the top, pure
+    functions".
