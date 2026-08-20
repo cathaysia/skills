@@ -169,3 +169,24 @@ aws-lc-rs = "1"
 ```
 
 `aws-lc-rs` is API-compatible with `ring` for most use cases and is backed by AWS's maintained fork of BoringSSL, with FIPS support available.
+
+## 12. Scoped Cleanup — Use `scopeguard::defer!` for Local Resource Teardown
+
+When a local variable or side effect needs guaranteed cleanup at scope exit — but doesn't warrant a full RAII wrapper type — use `scopeguard::defer!`. This is the Rust equivalent of `defer` in Go or a finally block, and is appropriate for one-off cleanup that is too small to deserve its own `Drop` impl.
+
+```rust
+use scopeguard::defer;
+
+fn with_temp_file() -> Result<()> {
+    let path = create_temp_file()?;
+    defer! {
+        let _ = fs::remove_file(&path);
+    }
+
+    // use the file; cleanup runs automatically on any exit path
+    process(&path)?;
+    Ok(())
+}
+```
+
+Use `defer!` for: temporary files, unlocking external resources, resetting global state in tests, and any other ad-hoc cleanup that runs once. Prefer a proper `Drop` impl (RAII struct) when the same cleanup pattern recurs across multiple call sites.
