@@ -132,10 +132,64 @@ specifically the App Router.
 - **Component Architecture**:
   - Strictly enforce **one component per file**. Do not define multiple
     components within a single file.
-  - **Avoid defining functions inside components**. Define them outside (e.g.,
-    below the component) and call them from within.
-  - If a function _must_ be created inside a component (e.g., it requires access
-    to local state or props), it **must be wrapped in `useCallback`**.
+  - **No inline function definitions inside components.** The following pattern
+    is **forbidden**:
+    ```ts
+    // ❌ FORBIDDEN
+    function MyComponent() {
+      function handleClick() { ... }   // pure-looking but defined inside
+      return <Button onClick={handleClick} />;
+    }
+    ```
+  - **Pure functions → extract to module scope.** If the function does not
+    reference `state`, `props`, refs, or any other component-local value, define
+    it **outside** the component (at the top of the file or in a shared util):
+    ```ts
+    // ✅ CORRECT — pure helper lives outside the component
+    function formatAmount(value: number) {
+      return value.toFixed(2);
+    }
+
+    export default function MyComponent() {
+      return <span>{formatAmount(42)}</span>;
+    }
+    ```
+  - **Closures → `useCallback`.** If the function *must* close over
+    `state`/`props`/refs, wrap it in `useCallback` with the correct dependency
+    array. A raw inline arrow function or `function` declaration inside a
+    component body is **never** acceptable:
+    ```ts
+    // ✅ CORRECT — closure is memoized with useCallback
+    export default function MyComponent({ onSuccess }: Props) {
+      const [count, setCount] = useState(0);
+
+      const handleClick = useCallback(() => {
+        setCount((c) => c + 1);
+        onSuccess(count);
+      }, [count, onSuccess]);
+
+      return <Button onClick={handleClick} />;
+    }
+    ```
+- **No Re-exports**: Never use barrel-style re-exports that forward symbols from
+  another module. The following pattern is **forbidden**:
+  ```ts
+  // ❌ FORBIDDEN
+  export { TransfersPageView, type TransfersPageViewProps } from './transfers-view';
+  ```
+  Instead, import directly from the source file at the call site.
+- **Inline Default Exports**: Never declare a function and then export it as
+  default in a separate statement. The following pattern is **forbidden**:
+  ```ts
+  // ❌ FORBIDDEN
+  function MyComponent() { ... }
+  export default MyComponent;
+  ```
+  Always use the inline form:
+  ```ts
+  // ✅ CORRECT
+  export default function MyComponent() { ... }
+  ```
 - **Loading States**: Use shadcn/ui Skeletons for all loading states (both in
   `loading.js` and within components using `Suspense`). Any component that
   performs I/O must be wrapped with a skeleton fallback. Avoid "Loading..." text
