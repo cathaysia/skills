@@ -1,0 +1,19 @@
+{
+  "skill_name": "research-report-creator",
+  "evals": [
+    {
+      "id": 0,
+      "name": "Distributed Workflow Orchestration Research",
+      "prompt": "Conduct a technical research report on distributed workflow orchestration engines. The objective is to support long-running, fault-tolerant stateful workflows for our distributed backend services. Investigate Temporal (direct solution) and Apache Airflow (batch DAG analogue). Follow the research-report-creator skill strictly: define factual purpose and targets, use separate subagents for each target without cross-editing or cross-referencing, ensure the findings contain no cross-target comparison or mentions of purpose, cite source links for every claim, and provide concrete recommendations.",
+      "expected_output": "A formal four-part research report (Research Purpose, Research Targets, Research Findings, Recommendations). Each target investigated in its own chapter in Findings detailing achieved outcome, underlying mechanism, and trade-offs/costs, with source citations for every fact and metric, zero cross-comparison in Findings, no mention of the research purpose in Findings, and fact-grounded recommendations.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "High-Performance Key-Value Storage Engine Investigation",
+      "prompt": "Create an objective technical research report investigating high-performance embedded key-value storage engines capable of sustained 100k writes/sec. Targets to research: RocksDB (direct LSM-tree solution) and SQLite with WAL mode (relational file-based analogue). Ensure each target is investigated independently, findings cite official documentation/benchmarks, chapters are strictly separated, no comparative statements exist in the findings section, and recommendations are based solely on the documented findings.",
+      "expected_output": "A four-part report strictly adhering to the specified sequence: Purpose, Targets, Findings, Recommendations. Findings must contain separated chapters for RocksDB and SQLite covering actual outcome/effects, how they achieve it, and trade-offs incurred, with complete factual citation links, no cross-target comparison, and recommendations logically deduced from the findings.",
+      "files": []
+    }
+  ]
+}
