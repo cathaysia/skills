@@ -22,6 +22,8 @@ merge commits into target or trunk branches.
   - Single commit PR/merge: `git merge --squash <branch> && git commit`.
 - **Clean atomic commits**: Squash WIP, typo, and fixup commits before merging
   (`git rebase -i`). Every commit on trunk must be functional and clean.
+- **No AI co-authors**: Never attribute commits to AI models or add
+  `Co-authored-by:` trailers/footers for AI assistants, models, or bots.
 - **Amend unpushed fixes**: If changes are meant to fix the previous commit and
   that commit has not been pushed yet, amend it directly (`git commit --amend`
   or `git commit --amend --no-edit`) instead of creating a new commit.
