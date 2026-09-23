@@ -1,6 +1,6 @@
 ---
 name: git-commit-message
-description: Draft or create git commit messages using conventional commits in a commitizen-compatible style. Use when the user asks for a commit message, wants help choosing a commit type or scope, or wants codex to commit changes with lowercase-first wording and BREAKING CHANGES footers instead of bang shorthand.
+description: Draft or create git commit messages using conventional commits in a commitizen-compatible style. Use when the user asks for a commit message, wants help choosing a commit type or scope, or wants to commit changes with lowercase-first wording, no AI co-authors, and BREAKING CHANGES footers instead of bang shorthand.
 ---
 
 # Git Commit Message
@@ -41,6 +41,9 @@ Use this skill when the user wants to:
 - Do not mention implementation trivia in the subject when the user-visible or
   repository-level change is clearer.
 - Do not add a body or footer unless it carries real information.
+- **No AI co-authors**: Never add `Co-authored-by:` trailers or footers for AI
+  models, assistants, bots, or synthetic agents (e.g., Claude, ChatGPT, Gemini,
+  Copilot). Commits must attribute human authors only.
 - If the change is breaking, explain the incompatibility in a
   `BREAKING CHANGES:` footer.
 - If the change addresses a known GitHub issue, add a footer using the `fix #id`
