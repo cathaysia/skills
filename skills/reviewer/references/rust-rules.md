@@ -1,17 +1,4 @@
----
-name: rust-expert
-description: >-
-  Rust expert coding guidelines and best practices for writing idiomatic,
-  production-quality Rust code. Use this skill whenever writing, reviewing, or
-  refactoring Rust code — including designing APIs, handling errors, working
-  with traits, managing resources, parsing CLI args, or choosing crates. Triggers
-  on any Rust task: struct design, error handling, trait objects, async code,
-  CLI tools, encryption, event systems, and dependency selection.
----
-
-# Rust Expert Guidelines
-
-These rules define the project's Rust coding standards. Apply them consistently across all Rust code.
+# Rust Rules
 
 ## 1. Observer / Event Propagation — Use a `Listener` Trait
 
@@ -112,7 +99,7 @@ pub enum ConfigError {
 
 ## 8. Derive Formatting — Use `derive_more` Before Hand-Rolling
 
-When the standard `#[derive(Debug)]` or `#[derive(Display)]` macros are insufficient (e.g., you need a custom `Display` on a complex struct), reach for `derive_more` before writing an impl manually.
+When the standard `#[derive(Debug)]` or `#[derive(Display)]` macros are insufficient, reach for `derive_more` before writing an impl manually.
 
 ```rust
 use derive_more::{Display, Debug};
@@ -121,7 +108,6 @@ use derive_more::{Display, Debug};
 #[display("Peer({addr})")]
 pub struct PeerInfo {
     addr: SocketAddr,
-    // ...
 }
 ```
 
@@ -149,15 +135,13 @@ fn main() {
 }
 ```
 
-## 10. Resource Lifecycle — OOP + RAII via `rust-async-lifecycle`
+## 10. Resource Lifecycle — RAII
 
-Manage resources with RAII: the object is both the resource and its handler. Use the structured-concurrency patterns from the `rust-async-lifecycle` skill:
+Manage resources with RAII: the object is both the resource and its handler.
 
-- Object owns the resource, the lifecycle (`TaskScope`), and the operations — do not split them
+- Object owns the resource, the lifecycle, and the operations — do not split them
 - `Drop` signals cancellation; `async fn close()` cancels and drains
 - `tokio::spawn` lives at the call site; the spawned function stays pure; the cancellation `select!` sits at the top of the spawned task
-
-Read the [`rust-async-lifecycle`](../rust-async-lifecycle/SKILL.md) skill for the full pattern, decision table, and audit workflow.
 
 ## 11. Cryptography — Use `aws-lc-rs`
 
@@ -170,9 +154,9 @@ aws-lc-rs = "1"
 
 `aws-lc-rs` is API-compatible with `ring` for most use cases and is backed by AWS's maintained fork of BoringSSL, with FIPS support available.
 
-## 12. Scoped Cleanup — Use `scopeguard::defer!` for Local Resource Teardown
+## 12. Scoped Cleanup — Use `scopeguard::defer!`
 
-When a local variable or side effect needs guaranteed cleanup at scope exit — but doesn't warrant a full RAII wrapper type — use `scopeguard::defer!`. This is the Rust equivalent of `defer` in Go or a finally block, and is appropriate for one-off cleanup that is too small to deserve its own `Drop` impl.
+When a local variable or side effect needs guaranteed cleanup at scope exit — but doesn't warrant a full RAII wrapper type — use `scopeguard::defer!`.
 
 ```rust
 use scopeguard::defer;
@@ -183,10 +167,70 @@ fn with_temp_file() -> Result<()> {
         let _ = fs::remove_file(&path);
     }
 
-    // use the file; cleanup runs automatically on any exit path
     process(&path)?;
     Ok(())
 }
 ```
 
-Use `defer!` for: temporary files, unlocking external resources, resetting global state in tests, and any other ad-hoc cleanup that runs once. Prefer a proper `Drop` impl (RAII struct) when the same cleanup pattern recurs across multiple call sites.
+Use `defer!` for: temporary files, unlocking external resources, resetting global state in tests, and any other ad-hoc cleanup that runs once. Prefer a proper `Drop` impl when the same pattern recurs across multiple call sites.
+
+## 13. `Arc<Self>` — Constructors That Need Weak Back-References
+
+When a child/sub-object needs to hold a reference back to its parent, the constructor must return `Arc<Self>` (not `Self`). This lets the constructor store a `Weak<Self>` internally without a separate `Arc::new` call at the call site.
+
+```rust
+// ✅ correct
+impl Foo {
+    pub fn new(…) -> Arc<Self> {
+        Arc::new(Self { … })
+    }
+}
+
+// ❌ avoid — callers must remember to wrap, and internal Weak cannot be set up
+impl Foo {
+    pub fn new(…) -> Self { … }
+}
+```
+
+## 14. Mutex Poisoning — Always Panic
+
+A poisoned `Mutex` means a thread panicked while holding the lock — the protected data may be in an inconsistent state. Always propagate the panic:
+
+```rust
+// ✅
+let guard = mutex.lock().expect("Mutex poisoned");
+
+// ❌ silently recovers from a potentially corrupted state
+let guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
+```
+
+## 15. Channels — Prefer Bounded; Prefer Function Calls Over Channels
+
+Unbounded channels (`std::sync::mpsc::channel()`, `tokio::sync::mpsc::unbounded_channel()`) have no backpressure. A fast producer can cause unbounded memory growth without the sender ever knowing. Prefer bounded channels. If you genuinely need an unbounded channel, document the reasoning.
+
+Prefer function-call / direct-method-call data flow over channel-based data passing. Channels are appropriate for *events* and *commands*, not for *query responses* that could be a return value.
+
+## 16. Lock Scope — Minimise `MutexGuard` Lifetime
+
+Keep `MutexGuard` lifetimes as short as possible. Place the lock acquisition and all operations on the guard inside a dedicated block:
+
+```rust
+// ✅ guard released when block exits
+{
+    let mut data = self.inner.lock().expect("poisoned");
+    data.count += 1;
+} // ← guard dropped here
+
+do_something_without_holding_lock();
+
+// ❌ guard held for the rest of the enclosing scope
+let mut data = self.inner.lock().expect("poisoned");
+data.count += 1;
+do_something_without_holding_lock(); // lock still held!
+```
+
+Never call `drop(guard)` on a `MutexGuard`. Use a block scope instead — explicit drops are easy to miss when refactoring.
+
+## Review Actions
+
+For each Rust-specific violation, show the offending snippet and a corrected replacement that follows the rule above.
