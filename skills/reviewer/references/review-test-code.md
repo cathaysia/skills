@@ -1,23 +1,10 @@
----
-name: review-test-code
-description: >
-  Test code quality reviewer. Enforces deep inspection of test suites and test implementations.
-  MUST invoke an isolated subagent to perform the test code review.
-  Checks for test overfitting, meaningless checks, bypass branches, over-broad assertions,
-  guaranteed-pass tests, wrong-assertion-for-error-checking, mocking business logic instead of I/O,
-  retroactive code catering, happy-path only (missing edge cases, error states, irreversible ops),
-  timing and execution order dependency (sleep, race conditions, inter-test order coupling),
-  environment pollution/leftover files, and flaky/non-deterministic tests.
-  Activate when reviewing tests, PRs with tests, or after writing/modifying test cases.
----
-
-# Review Test Code
+# Test Code Review Rules
 
 Rigorous quality and design review for test code.
 
 > [!IMPORTANT]
 > **Must Use an Isolated Subagent for Review**:
-> When asked to review test code or upon detecting test review requirements, the main agent **MUST NOT** conduct the review directly in the main context. It MUST spawn an isolated subagent (e.g. `research` or `self`) via `invoke_subagent` with a clear role and prompt to perform the in-depth review and return the structured findings.
+> When reviewing test code, the main agent **MUST NOT** conduct the review directly in the main context. It MUST spawn an isolated subagent (e.g. `research` or `self`) via `invoke_subagent` with a clear role and prompt to perform the in-depth review and return structured findings.
 
 ---
 
@@ -96,19 +83,17 @@ The review subagent must inspect test code against each of the following 12 dime
 
 ## Review Execution Workflow
 
-The main agent must adhere to this review workflow:
-
 ```mermaid
 flowchart TD
-    A["Main Agent: Detects test code review request"] --> B["Calls invoke_subagent to launch isolated reviewer"]
+    A["Agent: Detects test code in review scope"] --> B["Calls invoke_subagent with isolated reviewer role"]
     B --> C["Subagent: Inspects test cases and production code"]
-    C --> D["Subagent: Iterates over the 12 review dimensions"]
-    D --> E["Subagent: Formulates issues and concrete refactoring code"]
-    E --> F["Subagent: Generates structured review report"]
-    F --> G["Main Agent: Delivers findings to user"]
+    C --> D["Subagent: Evaluates against 12 review dimensions"]
+    D --> E["Subagent: Formulates findings and concrete replacement code"]
+    E --> F["Subagent: Generates structured test review report"]
+    F --> G["Agent: Delivers findings to user"]
 ```
 
-### 1. Main Agent Subagent Invocation Example
+### Subagent Invocation Prompt Template
 
 ```python
 invoke_subagent(
@@ -140,9 +125,7 @@ Output requirements: Use the standard review output template. For each violation
 
 ---
 
-## Output Template
-
-The subagent review report must follow this format:
+## Output Template for Test Reviews
 
 ````markdown
 ## Test Code Review Report
