@@ -1,5 +1,5 @@
 ---
-name: review test code
+name: review-test-code
 description: >
   Test code quality reviewer. Enforces deep inspection of test suites and test implementations.
   MUST invoke an isolated subagent to perform the test code review.
@@ -144,7 +144,7 @@ Output requirements: Use the standard review output template. For each violation
 
 The subagent review report must follow this format:
 
-```markdown
+````markdown
 ## Test Code Review Report
 
 ### Overall Status: [Approved / Needs Improvement / Critical Risks]
@@ -176,4 +176,4 @@ The subagent review report must follow this format:
 - **Total Issues Found**: N
 - **Key High-Risk Vulnerabilities**: [List top 2-3 issues to address first]
 - **Coverage & Edge-Case Recommendations**: [Suggestions for missing edge/error cases]
-```
+````
