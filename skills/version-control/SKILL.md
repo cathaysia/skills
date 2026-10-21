@@ -39,3 +39,7 @@ merge commits into target or trunk branches.
   by rewriting shared history.
 - **Conflict resolution**: Resolve conflict markers $\to$ `git add <files>`
   $\to$ `git rebase --continue`. Do not run `git commit` mid-rebase.
+- **Post-merge cleanup (worktree, branch & artifacts)**: Once a feature branch is integrated into the target/main branch:
+  - Remove associated worktrees: `git worktree remove <path>` (and `git worktree prune` if needed).
+  - Delete local and remote feature branches: `git branch -d <branch>` (or `-D` if already squashed/rebased) and `git push <remote> --delete <branch>`.
+  - Clean up leftover untracked or temporary build/test files and artifacts left during integration.
