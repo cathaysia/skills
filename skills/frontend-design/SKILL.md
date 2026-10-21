@@ -52,7 +52,7 @@ Use composition, alignment, spacing, scale, and contrast to communicate structur
 - Use cards for genuinely self-contained surfaces, not as the default wrapper for every section.
 - Avoid nested cards by default. Use spacing, dividers, headings, or a subtle surface change inside a card unless the nested item is independently actionable and semantically distinct.
 - Match density to the task. Operational tools can be compact; onboarding and marketing flows usually need more breathing room.
-- Keep a stable alignment system. Small arbitrary offsets make an interface feel improvised.
+- Keep a stable alignment system. Small arbitrary offsets make an interface feel improvised. Maintain clear visual alignment across related elements (e.g. baseline alignment for text alongside controls, consistent margins and grid edges, aligned form labels and inputs, and vertical rhythm).
 
 ## Use Typography and Copy Deliberately
 
@@ -160,6 +160,7 @@ Before handing off, confirm:
 - the primary task and action are immediately clear
 - the interface has one coherent visual direction
 - hierarchy works without excessive containers or decoration
+- elements maintain intentional visual alignment, grid consistency, and vertical rhythm
 - components, tokens, and icons match the local system
 - actions and statuses are understandable without guessing or relying on color alone
 - loading, empty, error, and success behavior fit the workflow
