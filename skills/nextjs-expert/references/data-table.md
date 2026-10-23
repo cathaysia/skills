@@ -1,7 +1,7 @@
 # Data Table Guide
 
-Read this guide whenever a task creates or substantially changes a table,
-data grid, admin list, audit log, or other tabular view in a Next.js app.
+Read this guide whenever a task creates or substantially changes a table, data
+grid, admin list, audit log, or other tabular view in a Next.js app.
 
 The required result is a shadcn/ui Data Table with a bounded viewport, a sticky
 header, a single shadcn `ScrollArea`, seamless incremental loading, and URL
@@ -50,8 +50,8 @@ Split responsibilities as follows:
    ordering and stable row identifiers.
 4. The Client Component renders the shadcn Data Table, appends later pages,
    updates the URL, and listens to the `ScrollArea` viewport.
-5. Filter controls write to the URL. The URL drives the server query rather
-   than duplicating durable table state in local storage.
+5. Filter controls write to the URL. The URL drives the server query rather than
+   duplicating durable table state in local storage.
 
 Use React Query when the surrounding application already uses it or when its
 caching and mutation behavior is useful. It does not replace the URL as the
@@ -82,7 +82,7 @@ Typical containment chain:
   <section className="flex min-h-0 flex-1 flex-col gap-4">
     <DataTable className="min-h-0 flex-1 overflow-hidden" />
   </section>
-</main>
+</main>;
 ```
 
 Match the loading skeleton to the same fixed dimensions so loading does not
@@ -91,8 +91,8 @@ cause layout shift.
 ## Search and filter toolbar placement
 
 Place search boxes and filter dropdowns directly above the table viewport,
-inside the same fixed table section. The controls must remain visible while
-the user scrolls through rows.
+inside the same fixed table section. The controls must remain visible while the
+user scrolls through rows.
 
 - Render the toolbar immediately before the `ScrollArea`; do not put it inside
   the scroll viewport.
@@ -103,9 +103,9 @@ the user scrolls through rows.
 - Put the primary search input first, followed by filter selects, an optional
   reset button, and table actions. Right-align destructive or bulk actions when
   the layout has room.
-- Keep the toolbar visually attached to the table. A title or short
-  description may appear above it, but do not insert unrelated cards or page
-  content between the controls and the table.
+- Keep the toolbar visually attached to the table. A title or short description
+  may appear above it, but do not insert unrelated cards or page content between
+  the controls and the table.
 - If the shared Data Table exposes `toolbar` or `filters` props, render those
   props immediately above its `ScrollArea`. If filters are feature-specific,
   compose them outside the generic component but keep them as its adjacent
@@ -123,18 +123,18 @@ Typical layout:
   <div className="min-h-0 flex-1">
     <DataTable className="h-full min-h-0" />
   </div>
-</section>
+</section>;
 ```
 
 Commit search and filter values to the URL using the rules below. Debounce text
-input; update select filters immediately; reset `page` to `1` for either kind
-of filter change.
+input; update select filters immediately; reset `page` to `1` for either kind of
+filter change.
 
 ## ScrollArea is the only scroll owner
 
 Render the table inside shadcn/ui `ScrollArea`; do not use a browser-native
-`overflow-auto`, `overflow-x-auto`, or `overflow-y-auto` container for the
-table viewport.
+`overflow-auto`, `overflow-x-auto`, or `overflow-y-auto` container for the table
+viewport.
 
 The stock shadcn `Table` primitive normally creates a wrapper with
 `overflow-x-auto`. Nested inside `ScrollArea`, that wrapper creates a second
@@ -158,7 +158,7 @@ Include shadcn `ScrollBar` for horizontal overflow:
     {/* header and body */}
   </Table>
   <ScrollBar orientation="horizontal" />
-</ScrollArea>
+</ScrollArea>;
 ```
 
 Do not attach infinite-scroll logic to `window`, `document`, the page shell, or
@@ -172,7 +172,7 @@ Keep the complete header group fixed inside the `ScrollArea` viewport:
 ```tsx
 <TableHeader className="sticky top-0 z-10 border-b border-border bg-background/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80">
   {/* header rows */}
-</TableHeader>
+</TableHeader>;
 ```
 
 - Ensure header cells have a non-transparent background so body text does not
@@ -183,9 +183,9 @@ Keep the complete header group fixed inside the `ScrollArea` viewport:
 
 ## Backend query contract
 
-The backend must perform pagination, filtering, and server-relevant sorting.
-Use one-indexed `page` values unless an existing API contract requires a
-different convention.
+The backend must perform pagination, filtering, and server-relevant sorting. Use
+one-indexed `page` values unless an existing API contract requires a different
+convention.
 
 Validate and normalize:
 
@@ -272,8 +272,8 @@ Treat “seamless scrolling” as infinite incremental loading inside the fixed
   page is empty or shorter than `pageSize`.
 - Preserve row order and scroll position. Do not call `router.refresh()` after
   each appended page.
-- Show a compact loading-more indicator and an accessible end-of-results
-  message outside the scrolling body or in a non-disruptive footer row.
+- Show a compact loading-more indicator and an accessible end-of-results message
+  outside the scrolling body or in a non-disruptive footer row.
 
 Use `useCallback` for `loadMore` and any component-local URL update function,
 consistent with this skill's component architecture rules. Clean up scroll
@@ -286,8 +286,8 @@ listeners or observers in the effect cleanup.
   present that as a complete result.
 - Keep temporary input text local only while debouncing. The committed filter
   value belongs in the URL.
-- Reset pagination and accumulated rows whenever any dataset-defining
-  parameter changes.
+- Reset pagination and accumulated rows whenever any dataset-defining parameter
+  changes.
 - Keep TanStack Table in manual/server mode for remotely paginated sorting and
   filtering. Use it for column definitions, rendering, visibility, selection,
   and interaction state rather than client-side pagination of an incomplete
@@ -298,10 +298,9 @@ listeners or observers in the effect cleanup.
 - Use a shadcn `Skeleton` matching the fixed table shell for initial server
   loading.
 - Keep an existing table visible during load-more requests.
-- Show the empty state inside a full-width table row with the correct
-  `colSpan`.
-- Surface load-more errors without discarding already loaded rows, and provide
-  a retry action.
+- Show the empty state inside a full-width table row with the correct `colSpan`.
+- Surface load-more errors without discarding already loaded rows, and provide a
+  retry action.
 - Disable repeated automatic retries until the user scrolls again or chooses
   retry.
 

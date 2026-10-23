@@ -68,8 +68,8 @@ specifically the App Router.
   Keep it in the same table section with `shrink-0`; do not place filters in a
   detached panel or inside the scrolling rows.
 - **One scroll owner**: Wrap the table in shadcn/ui `ScrollArea`. Remove or
-  disable the shadcn `Table` component's native `overflow-x-auto` wrapper so
-  the browser does not create a second overflow scrollbar.
+  disable the shadcn `Table` component's native `overflow-x-auto` wrapper so the
+  browser does not create a second overflow scrollbar.
 - **Sticky header**: Keep the header fixed at the top of the `ScrollArea`
   viewport with an opaque or blurred `bg-background`, an appropriate `z-index`,
   and a visual divider.
@@ -154,7 +154,7 @@ specifically the App Router.
       return <span>{formatAmount(42)}</span>;
     }
     ```
-  - **Closures → `useCallback`.** If the function *must* close over
+  - **Closures → `useCallback`.** If the function _must_ close over
     `state`/`props`/refs, wrap it in `useCallback` with the correct dependency
     array. A raw inline arrow function or `function` declaration inside a
     component body is **never** acceptable:
@@ -175,7 +175,10 @@ specifically the App Router.
   another module. The following pattern is **forbidden**:
   ```ts
   // ❌ FORBIDDEN
-  export { TransfersPageView, type TransfersPageViewProps } from './transfers-view';
+  export {
+    TransfersPageView,
+    type TransfersPageViewProps,
+  } from "./transfers-view";
   ```
   Instead, import directly from the source file at the call site.
 - **Inline Default Exports**: Never declare a function and then export it as
@@ -196,7 +199,8 @@ specifically the App Router.
   or generic spinners.
 - **Security**: Never expose sensitive logic or keys in Client Components. Use
   `server-only` package to prevent accidental client-side imports.
-- **Auth / Redirects**: Do not use `redirect` for login logic within the code. All login-related redirects must be handled centrally in `proxy.ts`.
+- **Auth / Redirects**: Do not use `redirect` for login logic within the code.
+  All login-related redirects must be handled centrally in `proxy.ts`.
 - **Performance**: Use `next/image` for optimized images and `next/font` for
   zero-layout-shift fonts.
 - **Types**: Use TypeScript for all components, actions, and schemas.

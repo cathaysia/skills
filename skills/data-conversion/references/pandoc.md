@@ -77,7 +77,7 @@ Typical installation approaches:
 ## Caveats
 
 - Rich formatting does not always round-trip cleanly across formats.
-- Embedded media, comments, tracked changes, and advanced layout features may
-  be simplified or lost.
+- Embedded media, comments, tracked changes, and advanced layout features may be
+  simplified or lost.
 - PDF generation can fail even when `pandoc` is installed if no PDF engine is
   present.

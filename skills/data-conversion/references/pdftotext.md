@@ -6,7 +6,8 @@ text output rather than format-preserving conversion.
 Official references:
 
 - Poppler project: https://poppler.freedesktop.org/
-- Debian man page example: https://manpages.debian.org/bookworm/poppler-utils/pdftotext.1.en.html
+- Debian man page example:
+  https://manpages.debian.org/bookworm/poppler-utils/pdftotext.1.en.html
 
 ## Common commands
 
@@ -51,7 +52,8 @@ pdftotext -tsv input.pdf output.tsv
 `pdftotext` is specialized for:
 
 - Input: PDF
-- Output: plain text, plus auxiliary HTML or TSV variants for metadata-oriented extraction
+- Output: plain text, plus auxiliary HTML or TSV variants for metadata-oriented
+  extraction
 
 It is the right tool when the user wants readable extracted text, not when they
 want layout-faithful HTML, DOCX, or image output.

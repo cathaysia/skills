@@ -22,10 +22,15 @@ merge commits into target or trunk branches.
   - Single commit PR/merge: `git merge --squash <branch> && git commit`.
 - **Clean atomic commits**: Squash WIP, typo, and fixup commits before merging
   (`git rebase -i`). Every commit on trunk must be functional and clean.
-- **Prevent sensitive data & privacy leaks**: Before committing or pushing, thoroughly inspect staged changes and diffs (`git diff --cached`) for privacy leaks and sensitive information. Specifically check for:
-  - Private project names, internal repository URLs, or confidential identifiers when contributing to open-source or public projects.
-  - Absolute local machine paths (e.g., `/home/<username>/...`, `C:\Users\<username>\...`).
-  - Company names, internal team names, internal domain names/IPs, and infrastructure hosts.
+- **Prevent sensitive data & privacy leaks**: Before committing or pushing,
+  thoroughly inspect staged changes and diffs (`git diff --cached`) for privacy
+  leaks and sensitive information. Specifically check for:
+  - Private project names, internal repository URLs, or confidential identifiers
+    when contributing to open-source or public projects.
+  - Absolute local machine paths (e.g., `/home/<username>/...`,
+    `C:\Users\<username>\...`).
+  - Company names, internal team names, internal domain names/IPs, and
+    infrastructure hosts.
   - Secrets, API keys, tokens, credentials, or private keys.
 - **No AI co-authors**: Never attribute commits to AI models or add
   `Co-authored-by:` trailers/footers for AI assistants, models, or bots.
@@ -39,7 +44,11 @@ merge commits into target or trunk branches.
   by rewriting shared history.
 - **Conflict resolution**: Resolve conflict markers $\to$ `git add <files>`
   $\to$ `git rebase --continue`. Do not run `git commit` mid-rebase.
-- **Post-merge cleanup (worktree, branch & artifacts)**: Once a feature branch is integrated into the target/main branch:
-  - Remove associated worktrees: `git worktree remove <path>` (and `git worktree prune` if needed).
-  - Delete local and remote feature branches: `git branch -d <branch>` (or `-D` if already squashed/rebased) and `git push <remote> --delete <branch>`.
-  - Clean up leftover untracked or temporary build/test files and artifacts left during integration.
+- **Post-merge cleanup (worktree, branch & artifacts)**: Once a feature branch
+  is integrated into the target/main branch:
+  - Remove associated worktrees: `git worktree remove <path>` (and
+    `git worktree prune` if needed).
+  - Delete local and remote feature branches: `git branch -d <branch>` (or `-D`
+    if already squashed/rebased) and `git push <remote> --delete <branch>`.
+  - Clean up leftover untracked or temporary build/test files and artifacts left
+    during integration.
