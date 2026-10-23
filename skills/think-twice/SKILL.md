@@ -1,6 +1,6 @@
 ---
 name: think-twice
-description: "Think Twice: automatically run a critical self-review after proposing a debugging solution. Use this skill whenever the agent is debugging an issue, fixing a bug, resolving an error, troubleshooting a failure, or proposing a code fix. Activate this skill even when the fix seems straightforward — quick patches are exactly where blind spots hide."
+description: "Review a concrete debugging fix or implementation plan for over-engineering, production safety, performance, and symptom-only workarounds. Activate after a proposed solution exists; use the debugging skill for root-cause investigation."
 ---
 
 # Think Twice
